@@ -1,13 +1,19 @@
 {
   "name": "pi-mimo-voice-zh",
   "version": "0.0.5",
-  "description": "小米 MiMo 中文语音扩展 — 语音输入（ASR）和语音输出（TTS）",
-  "keywords": ["pi-package", "pi-extension", "voice", "tts", "asr", "chinese", "mimo", "xiaomi"],
+  "description": "小米 MiMo 中文语音输入扩展 — ASR 和 Ubuntu WebRTC 录音处理",
+  "keywords": ["pi-package", "pi-extension", "voice", "asr", "chinese", "mimo", "xiaomi", "webrtc"],
   "license": "MIT",
   "author": "mlosun",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mlosun/pi-mimo-voice-zh.git"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "jiti": "^2.6.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -17,6 +23,10 @@
   },
   "files": [
     "index.ts",
+    "audio.ts",
+    "diagnostics.ts",
+    "webrtc.ts",
+    "mimo.ts",
     "package.json",
     "mimo-voice-zh.example.json",
     "README.md"
