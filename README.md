@@ -38,6 +38,10 @@ brew install sox
 # 移除原有上游声明（如已安装），改为本地目录
 pi remove npm:pi-mimo-voice-zh
 pi install /absolute/path/to/pi-mimo-voice-zh
+
+# 本地目录由用户管理依赖；首次安装或更新代码后运行
+cd /absolute/path/to/pi-mimo-voice-zh
+npm install --ignore-scripts --legacy-peer-deps
 ```
 
 已有 `~/.pi/mimo-voice-zh.json` 时保留配置。首次使用可复制 `mimo-voice-zh.example.json`，将 `apiKey` 设为自己的 MiMo API Key，并限制文件权限为 `0600`。
@@ -57,7 +61,9 @@ pi install /absolute/path/to/pi-mimo-voice-zh
   "sttShortcut": "f8",
   "recordingBackend": "auto",
   "recordingDevice": "",
-  "recordingProcessing": "none"
+  "recordingProcessing": "none",
+  "vadEnabled": true,
+  "vadThreshold": 0.5
 }
 ```
 
@@ -67,6 +73,24 @@ pi install /absolute/path/to/pi-mimo-voice-zh
 - `recordingBackend`：`auto`、`parecord`、`arecord` 或 `sox`；macOS 仅支持 sox。
 - `recordingDevice`：空字符串使用默认麦克风；parecord 可填 PulseAudio source 名，arecord 可填 ALSA PCM 名。
 - `recordingProcessing`：`none`（兼容默认值）或 `webrtc`；后者需要 Linux PulseAudio + parecord。
+- `vadEnabled`：默认 `true`，上传前用 Silero VAD 检测人声、过滤无语音录音并裁剪静音；`false` 恢复原始录音上传，但仍进行原有电平/失真检查。
+- `vadThreshold`：人声概率阈值，默认 `0.5`，必须大于 `0` 且小于 `1`。调高更严格，但可能漏掉轻声或短回答。
+
+已有配置未包含 VAD 字段时自动使用默认值，不改写用户配置；修改后运行 `/reload`。
+
+## 上传前的人声检测与静音裁剪
+
+`/voice` / F8 的处理顺序：录音结束 → 原有电平/失真检查 → 本地 Silero VAD → MiMo ASR → 追加到编辑器。
+
+- 使用 Silero v5 ONNX 模型和 CPU WebAssembly；模型随 npm 依赖安装，运行时完全本地，不下载模型，不发送音频给其他服务。无需 Python、FFmpeg、CUDA 或额外原生库。
+- 通过电平检查后，仍没有检测到有效人声：提示“未检测到有效人声，未上传”，不调用 MiMo、不改动草稿，删除临时录音并恢复就绪状态。
+- 检测到人声：裁去头尾静音；句内短暂停顿保留，连续静音达到约 `900ms` 才切段。每段前后保留 `200ms` 缓冲，段间补 `120ms` 静音，再合并成一个完整 WAV，一次上传，不把句子拆成多个 ASR 请求。
+- 至少累计 `128ms` 超过阈值的人声帧才接受一段，避免瞬时噪声被 padding 放大；极短、轻声的“好/嗯”仍可能漏检，需要实测阈值，必要时关闭 VAD 对比。
+- `/voice-status` 显示 VAD 开关、阈值及最近检测的段数、上传时长和裁剪时长。VAD 初始化/推理失败会明确报错并停止上传，不悄悄回退到原始录音。
+- `/voice-test` 不执行 VAD、不裁剪，仍回听原始录音，方便检查漏字、噪声或录音链路问题。
+
+VAD 不是说话人识别，也不是降噪器；背景人声也可能通过检测。WebRTC 录音处理与 VAD 可同时使用，前者改善录音信号，后者判断和裁剪语音区间。
+此功能不清洗转写中的语气词、重复或自我纠正，文本后处理尚未加入。
 
 ## 录音和本地回听
 
@@ -146,5 +170,5 @@ npm test
 npm pack --dry-run
 ```
 
-测试使用假录音/回听进程和 Mock API，不读取真实 Key、不录制实际麦克风、不产生 API 用量。
-覆盖 ASR 请求与取消、平台后端、WAV/Base64 校验、电平/削波/DC、本地自检不上传、回听打断与退出清理、输入设备诊断、WebRTC 私有源与初始化竞态、重复操作和草稿保留、默认 F8 与自定义快捷键。
+测试使用假录音/回听进程和 Mock API，不读取真实 Key、不录制实际麦克风、不产生 API 用量。VAD 的集成测试使用假模型概率；另有真实 Silero CPU/WASM 的离线测试，验证静音和持续测试音不会被当作人声。
+覆盖 ASR 请求与取消、平台后端、WAV/Base64 校验、电平/削波/DC、本地自检不上传、回听打断与退出清理、输入设备诊断、WebRTC 私有源与初始化竞态、重复操作和草稿保留、默认 F8 与自定义快捷键，以及 VAD 空白/非语音过滤、头尾/长静音裁剪、短回答/短暂停顿、边缘缓冲、WAV 重建、开关/阈值、失败不上传、初始化/推理中的退出清理。
