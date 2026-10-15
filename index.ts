@@ -14,6 +14,7 @@ import {
 import { callASR, errorMessage } from "./mimo.ts";
 import { alsaCapture, audioIssues, inspectWav, pulseInput, qualitySummary } from "./diagnostics.ts";
 import { prepareWebrtcInput, type ProcessedInput } from "./webrtc.ts";
+import { prepareSpeech, speechSummary, validateVadThreshold } from "./vad.ts";
 
 interface VoiceSettings {
 	sttEnabled: boolean;
@@ -22,12 +23,15 @@ interface VoiceSettings {
 	recordingBackend: RecordingBackend;
 	recordingDevice: string;
 	recordingProcessing: "none" | "webrtc";
+	vadEnabled: boolean;
+	vadThreshold: number;
 }
 
 const CONFIG_PATH = join(homedir(), ".pi", "mimo-voice-zh.json");
 const DEFAULT_SETTINGS: VoiceSettings = {
 	apiKey: "", sttEnabled: true, sttShortcut: "f8",
 	recordingBackend: "auto", recordingDevice: "", recordingProcessing: "none",
+	vadEnabled: true, vadThreshold: 0.5,
 };
 
 function loadSettings(): VoiceSettings {
@@ -173,6 +177,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 			const session = sessionGen;
 			const signal = requests.signal;
 			let summary = "";
+			let speechPath: string | undefined;
 			current.stopping = true;
 			clearTimeout(current.timer);
 			recognizing = true;
@@ -203,7 +208,23 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 					throw new Error(`本地录音检查未通过，未上传：${blocking.map((issue) => issue.message).join("；")}`);
 				}
 				for (const issue of issues) ctx.ui.notify(issue.message, "warning");
-				const text = await callASR(current.path, settings.apiKey, signal);
+				let uploadPath = current.path;
+				if (settings.vadEnabled) {
+					speechPath = audioPath("speech");
+					const speech = await prepareSpeech(current.path, speechPath, settings.vadThreshold, signal).catch((error) => {
+						if (active && session === sessionGen) lastDiagnostic += "\nVAD: 检测失败，未上传";
+						throw new Error(`本地 VAD 失败，未上传：${errorMessage(error, settings.apiKey)}`);
+					});
+					if (!active || session !== sessionGen) return;
+					const vadSummary = speechSummary(speech);
+					lastDiagnostic += `\n${vadSummary}`;
+					ctx.ui.notify(vadSummary, "info");
+					if (!speech.segments.length) return;
+					uploadPath = speechPath;
+				} else {
+					lastDiagnostic += "\nVAD: 已关闭，上传原始录音";
+				}
+				const text = await callASR(uploadPath, settings.apiKey, signal);
 				if (!active || session !== sessionGen) return;
 				// 不覆盖用户已经输入的草稿，也不会自动发送识别结果。
 				const draft = ctx.ui.getEditorText();
@@ -216,6 +237,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 			} finally {
 				await releaseInput(current.input, ctx);
 				removeFile(current.path);
+				if (speechPath) removeFile(speechPath);
 				if (session === sessionGen) {
 					recording = null;
 					recognizing = false;
@@ -232,6 +254,10 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 		starting = true;
 		try {
 			const backend = recordingCommand("", settings.recordingBackend, settings.recordingDevice);
+			if (!test) {
+				if (typeof settings.vadEnabled !== "boolean") throw new Error("vadEnabled 必须是 true 或 false");
+				if (settings.vadEnabled) validateVadThreshold(settings.vadThreshold);
+			}
 			if (!["none", "webrtc"].includes(settings.recordingProcessing)) {
 				throw new Error("recordingProcessing 只支持 none / webrtc");
 			}
@@ -361,6 +387,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 				`平台: ${process.platform}；API Key: ${settings.apiKey ? "已配置" : "未配置"}`,
 				`录音: ${backend}；处理: ${settings.recordingProcessing === "webrtc" ? "WebRTC（不改默认设备/硬件增益）" : "原始录音"}`,
 				`输入设备: ${inputDescription}`,
+				`VAD: ${settings.vadEnabled ? `Silero v5 本地检测（阈值 ${settings.vadThreshold}）` : "已关闭"}；自检保留原始录音`,
 				`自检回放: ${describe(() => playbackCommand(""))}`,
 				`最近录音检测: ${lastDiagnostic}`,
 				`语音输入: /voice 或 ${settings.sttShortcut}；本地回听: /voice-test`,

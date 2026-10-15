@@ -6,11 +6,12 @@ const { join } = require('node:path');
 const { createJiti } = require('jiti');
 const { wav, executable, waitFor } = require('./helpers.cjs');
 
-async function setup(t, recorderFails = false, sample = wav(), config = {}) {
+async function setup(t, recorderFails = false, sample = wav(), config = {}, vadOptions = {}) {
   const home = fs.mkdtempSync(join(tmpdir(), 'mimo-extension-test-'));
   const bin = join(home, 'bin');
   fs.mkdirSync(bin);
   fs.mkdirSync(join(home, '.pi'));
+  fs.writeFileSync(join(home, 'vad-options.json'), JSON.stringify(vadOptions));
   fs.writeFileSync(join(home, '.pi/mimo-voice-zh.json'), JSON.stringify({
     apiKey: 'fake-api-key', sttEnabled: true, ...config,
   }));
@@ -43,7 +44,10 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}) {
     if (fs.readFileSync(process.argv[2]).toString('ascii', 0, 4) !== 'RIFF') process.exit(1);
     fs.writeFileSync('${join(home, 'played')}', 'ok');
   `);
-  const factory = createJiti(__filename, { moduleCache: false })('../index.ts').default;
+  const factory = createJiti(__filename, {
+    moduleCache: false,
+    alias: { 'onnxruntime-web': join(__dirname, 'fake-ort.cjs') },
+  })('../index.ts').default;
   const ctx = {
     hasUI: true, mode: 'tui',
     ui: {
@@ -332,6 +336,175 @@ test('empty ASR response includes recording quality instead of asserting a mic c
   assert.match(error.text, /finish_reason=stop/);
   assert.match(error.text, /录音 0.60s/);
   assert.ok(!error.text.includes('fake-api-key'));
+});
+
+test('VAD rejects non-speech at normal levels without upload or editor changes', async t => {
+  const app = await setup(t, false, wav(), {}, { probabilities: [] });
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('must not upload non-speech'); });
+  await app.calls.get('voice')();
+  const path = await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(app.editor, '已有草稿');
+  assert.ok(app.notices.some(n => n.text.includes('未检测到有效人声，未上传') && n.level === 'info'));
+  assert.ok(!app.notices.some(n => n.level === 'error'));
+  assert.equal(fs.existsSync(path), false);
+  assert.deepEqual(fs.readdirSync(join(path, '..')), []);
+  assert.ok(fs.existsSync(join(app.home, 'vad-released')));
+  assert.match(app.status, /语音输入就绪/);
+  await app.calls.get('voice-status')();
+  assert.match(app.notices.at(-1).text, /Silero v5 本地检测/);
+  assert.match(app.notices.at(-1).text, /未检测到有效人声/);
+});
+
+test('VAD uploads trimmed WAV with padding, short pauses, and all speech in one request', async t => {
+  const sample = wav(16000 * 5);
+  // Speech: 0.64–1.28s, pause 0.32s, speech 1.60–2.24s, then 1.28s pause, speech 3.52–4.16s.
+  const probabilities = Array.from({ length: Math.ceil(16000 * 5 / 512) }, (_, i) =>
+    (i >= 20 && i < 40) || (i >= 50 && i < 70) || (i >= 110 && i < 130) ? 0.9 : 0.01);
+  const app = await setup(t, false, sample, {}, { probabilities });
+  const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {
+    const encoded = JSON.parse(opts.body).messages[0].content[0].input_audio.data;
+    const uploaded = Buffer.from(encoded.split(',')[1], 'base64');
+    const first = sample.subarray(44 + (20 * 512 - 3200) * 2, 44 + (70 * 512 + 3200) * 2);
+    const second = sample.subarray(44 + (110 * 512 - 3200) * 2, 44 + (130 * 512 + 3200) * 2);
+    assert.equal(uploaded.readUInt32LE(4), uploaded.length - 8);
+    assert.equal(uploaded.readUInt32LE(40), uploaded.length - 44);
+    assert.deepEqual(uploaded.subarray(44), Buffer.concat([first, Buffer.alloc(3840), second]));
+    return Response.json({ choices: [{ message: { content: '裁剪后识别。' } }] });
+  });
+  await app.calls.get('voice')();
+  const path = await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(app.editor, '已有草稿\n裁剪后识别。');
+  assert.deepEqual(fs.readdirSync(join(path, '..')), []);
+  assert.ok(app.notices.some(n => /VAD: 2 段人声.*裁去/.test(n.text)));
+});
+
+test('a no-speech recording does not prevent the next voice input from recognizing', async t => {
+  const app = await setup(t, false, wav(), {}, { probabilities: [] });
+  const fetch = t.mock.method(global, 'fetch', async () =>
+    Response.json({ choices: [{ message: { content: '下一段录音。' } }] }));
+  await app.calls.get('voice')();
+  await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 0);
+  fs.writeFileSync(join(app.home, 'vad-options.json'), '{}');
+  await app.calls.get('voice')();
+  const path = await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(app.editor, '已有草稿\n下一段录音。');
+  assert.deepEqual(fs.readdirSync(join(path, '..')), []);
+  assert.match(app.status, /语音输入就绪/);
+});
+
+test('ASR failure removes both the original and VAD-trimmed audio', async t => {
+  const app = await setup(t);
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('mock network failure'); });
+  await app.calls.get('voice')();
+  const path = await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.ok(app.notices.some(n => n.level === 'error' && n.text.includes('mock network failure')));
+  assert.deepEqual(fs.readdirSync(join(path, '..')), []);
+  assert.equal(app.editor, '已有草稿');
+  assert.match(app.status, /语音输入就绪/);
+});
+
+test('VAD can be disabled without loading the model; original WAV is uploaded', async t => {
+  const sample = wav();
+  const app = await setup(t, false, sample, { vadEnabled: false }, { failLoad: true });
+  const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {
+    assert.equal(JSON.parse(opts.body).messages[0].content[0].input_audio.data,
+      `data:audio/wav;base64,${sample.toString('base64')}`);
+    return Response.json({ choices: [{ message: { content: '原始录音。' } }] });
+  });
+  await app.calls.get('voice')();
+  await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(fs.existsSync(join(app.home, 'vad-created')), false);
+  await app.calls.get('voice-status')();
+  assert.match(app.notices.at(-1).text, /VAD: 已关闭/);
+});
+
+test('local self-test bypasses VAD and replays the untrimmed diagnostic recording', async t => {
+  const app = await setup(t, false, wav(), {}, { failLoad: true });
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('must not upload self-test'); });
+  await app.calls.get('voice-test')();
+  await app.ready();
+  await app.calls.get('voice-test')();
+  assert.equal(app.played, true);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(fs.existsSync(join(app.home, 'vad-created')), false);
+});
+
+test('VAD load/inference failures and invalid probabilities fail closed and clean recordings', async t => {
+  for (const vadOptions of [{ failLoad: true }, { failRun: true }, { invalidProbability: true }]) {
+    await t.test(JSON.stringify(vadOptions), async t => {
+      const app = await setup(t, false, wav(), {}, vadOptions);
+      const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('must not upload on VAD failure'); });
+      await app.calls.get('voice')();
+      const path = await app.ready();
+      await app.calls.get('voice')();
+      assert.equal(fetch.mock.callCount(), 0);
+      assert.equal(app.editor, '已有草稿');
+      assert.ok(app.notices.some(n => n.level === 'error' && n.text.includes('本地 VAD 失败，未上传')));
+      assert.deepEqual(fs.readdirSync(join(path, '..')), []);
+      assert.match(app.status, /语音输入就绪/);
+      if (!vadOptions.failLoad) assert.ok(fs.existsSync(join(app.home, 'vad-released')));
+    });
+  }
+});
+
+test('shutdown cancels VAD initialization/inference and prevents uploads or stale UI writes', async t => {
+  for (const [name, vadOptions, marker] of [
+    ['initialization', { loadDelay: 250 }, 'vad-created'],
+    ['inference', { runDelay: 250 }, 'vad-running'],
+  ]) {
+    await t.test(name, async t => {
+      const app = await setup(t, false, wav(), {}, vadOptions);
+      const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('must not upload after shutdown'); });
+      await app.calls.get('voice')();
+      const path = await app.ready();
+      const pending = app.calls.get('voice')();
+      await waitFor(() => fs.existsSync(join(app.home, marker)));
+      const notices = app.notices.length;
+      await app.events.get('session_shutdown')({}, app.ctx);
+      await pending;
+      assert.equal(fetch.mock.callCount(), 0);
+      assert.equal(app.notices.length, notices);
+      assert.equal(app.editor, '已有草稿');
+      assert.equal(fs.existsSync(join(path, '..')), false);
+      assert.ok(fs.existsSync(join(app.home, 'vad-released')));
+    });
+  }
+});
+
+test('invalid VAD configuration is rejected before recording', async t => {
+  for (const config of [{ vadEnabled: 'false' }, { vadThreshold: 0 }, { vadThreshold: 1 }, { vadThreshold: '0.5' }]) {
+    await t.test(JSON.stringify(config), async t => {
+      const app = await setup(t, false, wav(), config);
+      await app.calls.get('voice')();
+      assert.equal(fs.existsSync(join(app.home, 'recording-path')), false);
+      assert.ok(app.notices.some(n => n.level === 'error' && /vadEnabled|vadThreshold/.test(n.text)));
+    });
+  }
+});
+
+test('custom VAD threshold is applied without overwriting existing configuration', async t => {
+  const app = await setup(t, false, wav(), { vadThreshold: 0.8 }, { probabilities: Array(19).fill(0.7) });
+  const configPath = join(app.home, '.pi/mimo-voice-zh.json');
+  const original = fs.readFileSync(configPath, 'utf8');
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('below threshold'); });
+  await app.calls.get('voice')();
+  await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.ok(app.notices.some(n => n.text.includes('未检测到有效人声')));
+  assert.equal(fs.readFileSync(configPath, 'utf8'), original);
 });
 
 test('local diagnostic replay can be stopped by /voice-test without any API call', async t => {

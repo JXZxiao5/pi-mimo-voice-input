@@ -1,8 +1,8 @@
 {
   "name": "pi-mimo-voice-zh",
   "version": "0.0.5",
-  "description": "小米 MiMo 中文语音输入扩展 — ASR 和 Ubuntu WebRTC 录音处理",
-  "keywords": ["pi-package", "pi-extension", "voice", "asr", "chinese", "mimo", "xiaomi", "webrtc"],
+  "description": "小米 MiMo 中文语音输入扩展 — ASR、本地 VAD 和 Ubuntu WebRTC 录音处理",
+  "keywords": ["pi-package", "pi-extension", "voice", "asr", "chinese", "mimo", "xiaomi", "webrtc", "vad"],
   "license": "MIT",
   "author": "mlosun",
   "repository": {
@@ -25,10 +25,15 @@
     "index.ts",
     "audio.ts",
     "diagnostics.ts",
+    "vad.ts",
     "webrtc.ts",
     "mimo.ts",
     "package.json",
     "mimo-voice-zh.example.json",
     "README.md"
-  ]
+  ],
+  "dependencies": {
+    "@ricky0123/vad-web": "0.0.31",
+    "onnxruntime-web": "1.22.0"
+  }
 }
