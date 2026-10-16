@@ -3,17 +3,32 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Pi MiMo 语音输入扩展 — 中文 ASR、本地 VAD、可选口语整理与录音自检",
-  "keywords": ["pi-package", "pi-extension", "voice", "voice-input", "speech-to-text", "stt", "asr", "chinese", "mimo", "xiaomi", "webrtc", "vad"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "voice",
+    "voice-input",
+    "speech-to-text",
+    "stt",
+    "asr",
+    "chinese",
+    "mimo",
+    "xiaomi",
+    "webrtc",
+    "vad"
+  ],
   "license": "MIT",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "author": "mlosun",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mlosun/pi-mimo-voice-zh.git"
+    "url": "git+https://github.com/JXZxiao5/pi-mimo-voice-input.git"
   },
   "scripts": {
     "test": "node --test test/*.test.cjs",
@@ -27,7 +42,9 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "files": [
     "index.ts",
@@ -35,6 +52,7 @@
     "package.json",
     "examples/mimo-voice-input.example.json",
     "README.md",
+    "README.en.md",
     "docs/*.md",
     "CHANGELOG.md",
     "LICENSE"
