@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createJiti } = require('jiti');
-const { prepareWebrtcInput } = createJiti(__filename)('../webrtc.ts');
+const { prepareWebrtcInput } = createJiti(__filename)('../src/webrtc.ts');
 const info = 'Default Source: input.mic\nDefault Sink: output.speakers\n';
 
 function fakePulse() {

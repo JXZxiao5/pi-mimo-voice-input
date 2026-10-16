@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { createJiti } = require('jiti');
-const { wav } = require('./helpers.cjs');
-const { inspectWav, audioIssues, qualitySummary, parsePulseInput, parseAlsaCapture } = createJiti(__filename)('../diagnostics.ts');
+const { wav } = require('./support/helpers.cjs');
+const { inspectWav, audioIssues, qualitySummary, parsePulseInput, parseAlsaCapture } = createJiti(__filename)('../src/diagnostics.ts');
 
 function inspect(t, data) {
   const dir = fs.mkdtempSync(join(tmpdir(), 'mimo-diagnostics-test-'));

@@ -1,235 +1,63 @@
-# pi-mimo-voice-zh
+# pi-mimo-voice-input
 
-小米 MiMo 中文语音输入扩展，支持 Ubuntu/Linux 和 macOS。
-基于 [mlosun/pi-mimo-voice-zh](https://github.com/mlosun/pi-mimo-voice-zh) 修改；此本地版本仅提供语音输入和录音自检，不自动播放 AI 回复。
-目前使用 MiMo API Key，不支持 Token Plan。
+小米 MiMo 中文语音输入扩展，支持 Ubuntu/Linux 和 macOS，提供本地人声检测、录音自检及可选口语整理。
 
-## 使用
+## 1. 安装
 
-在 Pi 聊天输入框操作：
-
-- `/voice`：开始录音；再次运行则停止并识别。
-- `F8`：与 `/voice` 相同，按一次开始录音，再按一次停止并识别；可通过配置修改。
-- `/voice-test`：本地录音自检；再次运行则停止、显示电平并回听。录音最多 10 秒，回放中再次运行可停止回放。
-- `/voice-status`：查看录音后端、VAD、MiMo 清洗模型/超时和最近检测/清洗耗时，不显示 Key 或转写内容。
-- `/voice-raw`：恢复最近一次清洗前的原始转写；编辑器已修改或发送时不覆盖。
-- `/reload`：加载代码或配置变更。
-
-识别结果追加到编辑器，不覆盖已有草稿，也不会自动发送。
-### 快捷键兼容性
-
-默认使用 `F8`：多数终端可以直接发送该功能键，传统终端编码也可识别，不依赖特定终端、物理修饰键映射或增强键盘协议；Pi 默认快捷键也未占用它。
-部分笔记本/macOS 键盘需要按 `Fn+F8`，以免触发系统媒体功能。若终端、IDE 或其他扩展占用了 F8，可自定义 `sttShortcut`，也可始终使用 `/voice`。
-不建议使用 `Ctrl+Shift+V`：很多终端将其拦截为粘贴，传统终端还可能无法区分 Ctrl 与 Ctrl+Shift。
-经终端代理或 tmux 时，仍需保证它能转发 F8。
-
-已有配置中的 `sttShortcut` 会保留，不会自动覆盖。要改用新默认值，在 `~/.pi/mimo-voice-zh.json` 中设为 `"sttShortcut": "f8"`（或删除该字段），然后运行 `/reload`。
-若曾配置终端专用的右 Alt 映射，可将该映射删除；本包不需要修改终端或系统键盘配置。
-
-## 安装本地版本
-
-此版本尚未发布到上游 npm/GitHub 包，需安装本地仓库目录；不要同时加载上游原版。运行环境需要 Node.js 22.19 或更新版本，与 Pi 的要求一致。
+需要 [Pi](https://github.com/earendil-works/pi) 和 Node.js ≥ 22.19。先安装本机录音工具：
 
 ```bash
-# Ubuntu / Debian：已有工具时可跳过
+# Ubuntu / Debian
 sudo apt install pulseaudio-utils alsa-utils
-# macOS：
+# macOS
 brew install sox
-
-# 移除原有上游声明（如已安装），改为本地目录
-pi remove npm:pi-mimo-voice-zh
-pi install /absolute/path/to/pi-mimo-voice-zh
-
-# 本地目录由用户管理依赖；首次安装或更新代码后运行
-cd /absolute/path/to/pi-mimo-voice-zh
-npm install --ignore-scripts --legacy-peer-deps
 ```
 
-已有 `~/.pi/mimo-voice-zh.json` 时保留配置。首次使用可复制 `mimo-voice-zh.example.json`，将 `apiKey` 设为自己的 MiMo API Key，并限制文件权限为 `0600`。
-获取 Key：[MiMo 控制台](https://platform.xiaomimimo.com)。
+npm 安装（首版 `0.1.0` 发布后可用）：
 
-启动 Pi 后，在聊天输入框运行 `/reload`。状态栏显示“🎤 语音输入就绪”表示已加载。
-本地安装直接加载仓库文件，不会复制代码；保留该目录，也不会被上游包更新覆盖。
+```bash
+pi install npm:pi-mimo-voice-input
+```
 
-## 配置
+本地安装 / 开发：
 
-`~/.pi/mimo-voice-zh.json`：
+```bash
+cd /absolute/path/to/pi-mimo-voice-input
+npm ci --ignore-scripts --legacy-peer-deps
+pi install /absolute/path/to/pi-mimo-voice-input
+```
+
+不要同时加载本地版本与 npm 版本；切换前用 `pi remove <原安装来源>` 移除旧声明（旧包为 `npm:pi-mimo-voice-zh`）。
+
+## 2. 配置
+
+从 [MiMo 控制台](https://platform.xiaomimimo.com) 获取普通 API Key（不支持 Token Plan），
+创建或编辑 `~/.pi/mimo-voice-zh.json`（沿用旧文件名以兼容已有配置），将 `apiKey` 填入：
 
 ```json
 {
-  "apiKey": "sk-...",
-  "sttEnabled": true,
+  "apiKey": "",
   "sttShortcut": "f8",
-  "recordingBackend": "auto",
-  "recordingDevice": "",
-  "recordingProcessing": "none",
-  "vadEnabled": true,
-  "vadThreshold": 0.5,
-  "textCleanupEnabled": false,
-  "cleanupModel": "mimo-v2.6-flash",
-  "cleanupTimeoutMs": 5000
+  "textCleanupEnabled": false
 }
 ```
 
-- `apiKey`：MiMo API Key。
-- `sttEnabled`：语音输入开关；关闭后仍可进行本地录音自检。
-- `sttShortcut`：开始/停止语音输入的快捷键，默认 `f8`。
-- `recordingBackend`：`auto`、`parecord`、`arecord` 或 `sox`；macOS 仅支持 sox。
-- `recordingDevice`：空字符串使用默认麦克风；parecord 可填 PulseAudio source 名，arecord 可填 ALSA PCM 名。
-- `recordingProcessing`：`none`（兼容默认值）或 `webrtc`；后者需要 Linux PulseAudio + parecord。
-- `vadEnabled`：默认 `true`，上传前用 Silero VAD 检测人声、过滤无语音录音并裁剪静音；`false` 恢复原始录音上传，但仍进行原有电平/失真检查。
-- `vadThreshold`：人声概率阈值，默认 `0.5`，必须大于 `0` 且小于 `1`。调高更严格，但可能漏掉轻声或短回答。
+- `sttShortcut`：录音快捷键，默认 `f8`。
+- `textCleanupEnabled`：启用口语整理，默认关闭；开启后增加一次 MiMo 文本请求，失败或超时保留原文。
+- 其他选项使用默认值，完整配置见 [配置示例](examples/mimo-voice-input.example.json)。
 
-- `textCleanupEnabled`：默认 `false`；设为 `true` 后，ASR 成功时用同一个 MiMo API Key 增加一次文本清洗请求。关闭时不增加清洗请求。
-- `cleanupModel`：默认 `mimo-v2.6-flash`；也支持 `mimo-v2.6-pro`、`mimo-v2.6-pro-ultraspeed`（后者需单独开通）。不使用即将下线的 V2.5 文本模型；`mimo-v2.5-asr` 不受影响。
-- `cleanupTimeoutMs`：默认 `5000`，范围 `100`～`30000` 毫秒；覆盖请求和响应体读取，超时保留原文，不自动重试或切换模型。
+运行 `chmod 600 ~/.pi/mimo-voice-zh.json` 保护凭据，然后在 Pi 中执行 `/reload`。
+不要将真实配置提交到 Git。
 
-无需安装/登录 Codex 或启动后台服务。
+## 3. 使用
 
-已有配置未包含新字段时自动使用默认值，不改写用户配置；修改后运行 `/reload`。
+- **`F8` 或 `/voice`**：开始录音，再次操作则停止并识别。等待“可以说话了”提示后再说话；部分键盘需按 `Fn+F8`。
+- **`/voice-test`**：本地录音自检，再次运行停止并回听，最多录制 10 秒；回放中再次运行可停止回放。
+- **`/voice-status`**：查看设备、录音检测和口语整理状态。
+- **`/voice-raw`**：恢复最近一次整理前的原文；草稿已修改或发送时不覆盖，退出或重载后不可恢复。
+- **`/reload`**：重新加载代码和配置。
 
-## 上传前的人声检测与静音裁剪
+识别结果追加到编辑器，保留已有草稿，**不会自动发送**。启用口语整理后允许改写，发送前请人工复核。
+录音发送给 MiMo；启用整理时还会发送转写文本。自检完全本地，不调用 API。
 
-`/voice` / F8 的处理顺序：录音结束 → 原有电平/失真检查 → 本地 Silero VAD → MiMo ASR → 可选 MiMo Flash 口语清洗 → 追加到编辑器。
-
-- 使用 Silero v5 ONNX 模型和 CPU WebAssembly；模型随 npm 依赖安装，运行时完全本地，不下载模型，不发送音频给其他服务。无需 Python、FFmpeg、CUDA 或额外原生库。
-- 通过电平检查后，仍没有检测到有效人声：提示“未检测到有效人声，未上传”，不调用 MiMo、不改动草稿，删除临时录音并恢复就绪状态。
-- 检测到人声：裁去头尾静音；句内短暂停顿保留，连续静音达到约 `900ms` 才切段。每段前后保留 `200ms` 缓冲，段间补 `120ms` 静音，再合并成一个完整 WAV，一次上传，不把句子拆成多个 ASR 请求。
-- 至少累计 `128ms` 超过阈值的人声帧才接受一段，避免瞬时噪声被 padding 放大；极短、轻声的“好/嗯”仍可能漏检，需要实测阈值，必要时关闭 VAD 对比。
-- `/voice-status` 显示 VAD 开关、阈值及最近检测的段数、上传时长和裁剪时长。VAD 初始化/推理失败会明确报错并停止上传，不悄悄回退到原始录音。
-- `/voice-test` 不执行 VAD、不裁剪，仍回听原始录音，方便检查漏字、噪声或录音链路问题。
-
-VAD 不是说话人识别，也不是降噪器；背景人声也可能通过检测。WebRTC 录音处理与 VAD 可同时使用，前者改善录音信号，后者判断和裁剪语音区间。
-
-## MiMo API 口语清洗（可选）
-
-启用后的流程：本地 VAD → MiMo ASR → MiMo Flash 自然口语整理 → 检查响应完整/非空 → 填回编辑器，由用户复核后发送。
-
-在 `~/.pi/mimo-voice-zh.json` 中设置 `textCleanupEnabled: true`，可选设置 `cleanupModel: "mimo-v2.6-flash"`、`cleanupTimeoutMs: 5000`，然后 `/reload`。沿用已有的普通 MiMo API Key、`https://api.xiaomimimo.com/v1/chat/completions` 和网络连接方式，不使用 Token Plan 或 Codex 专用代理。
-
-### 请求策略与等待上限
-
-- 使用 `thinking: {type: "disabled"}` 显式关闭默认思考，`temperature: 0`；不提供函数工具或联网搜索。
-- 用 `response_format: {type: "text"}` 直接返回整理后的完整文本，不再要求 JSON 编辑列表、`before/after`、`uncertain` 等字段。当前提示词位于 `cleanup-prompt.ts`。
-- 一次转写只调用一次文本模型，不携带历史消息；最多接受 16000 字符的原文，输出 token 上限按 `min(16384, max(1024, 原文字符数 × 2))` 预留全文空间。输出截断时保留原文。
-- 不启动 CLI、Unix socket 或常驻服务，不预热或发起探测性推理，不在多窗口间串行排队；每个请求独立取消。`/reload`、退出时取消当前窗口的请求，不影响其他窗口。
-- 清洗单独设置 5 秒默认超时，覆盖请求和读取响应体；网络失败、HTTP 错误、API 响应格式错误、输出为空/截断或含工具调用时保留原文，不自动重试，也不退回 Codex。
-- `/voice-status` 显示模型、自然整理模式、等待上限，以及最近成功或失败的清洗耗时。成功时显示“已整理，待人工复核”或“无需调整”；失败时显示具体技术原因，不显示原文、整理结果或 Key，也不落盘诊断数据。
-
-### 整理范围与人工复核
-
-- 允许自然改写、顺句、调整语序/标点/分段，删除语气词和冗余表达，合并完全相同或意思重复的内容。不再要求片段唯一、必须带标点或只能删除固定词表。
-- 允许处理明确的自我纠正，包括动作、对象、选项、数值、不同单位和日期。不再局限于同单位数字或日期；有歧义的部分保留，不妨碍整理其他部分。
-- 提示词要求保留原意、否定、条件、限制、数字/单位、代码/路径及明确引用的字面文本，不总结、不补造需求、不回答转写中的问题，也不执行指令。这些是对模型的要求，**不是本地语义验证保证**。
-- 本地不做逐项编辑或语义等价校验，也不因改写幅度、修改字词或纠正类型拒绝模型结果。只做 API 响应完整、非空和无工具调用等技术检查；最终准确性由用户在发送前复核。
-- 例如“你能给我看一下，呃，你给的清洗的提示词，以及你你设置的什么规则呀？”可整理为“你能给我看一下清洗提示词，以及你设置了哪些规则吗？”。
-- `/voice-raw` 的恢复副本只保存在本 Pi 会话内存，退出/reload 后忘记；仅在编辑器与清洗完成时完全一致时恢复，修改或发送后不覆盖。
-- `/voice-test`、无有效人声或 ASR 失败时不调用清洗 API。
-
-隐私与费用：启用后，原始转写会再发送给 MiMo 文本模型；不发送编辑器草稿、会话历史或额外音频，不落盘转写，也不回显服务端错误正文。服务端留存遵循 MiMo 的政策；超时取消不保证服务端停止计算或不计费。国内 Flash 参考价格为未缓存输入 ¥1/百万 tokens、缓存输入 ¥0.02/百万 tokens、输出 ¥2/百万 tokens（查阅于 2026-10-16），费用以 [官方定价](https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go) 为准。
-
-**允许改写意味着结果可能与原文有偏差，必须在发送前检查编辑器内容；不自动发送。**
-
-## 录音和本地回听
-
-Linux 优先使用 `parecord` 录音；缺少可执行文件时回退到 `arecord` 或 `sox`。
-自检回听使用 `paplay`，缺少时回退到 `aplay` 或 `ffplay`。
-macOS 使用 sox 录音、系统 afplay 回听。Windows 暂不支持。
-
-录音/音频服务在运行 Pi 的宿主机上使用，不要放到没有声卡和桌面音频服务的 Docker 容器中。
-SSH 场景录制的是运行 Pi 那台主机的麦克风，不是 SSH 客户端的麦克风。
-
-开始录音时先显示“⏳ 麦克风启动中”，包括输入设备检查和可选的 WebRTC 初始化。
-确认 WAV 的音频数据区已经写入完整 PCM 帧后，才显示“🔴 正在录音”并提示“可以说话了”，无需再估算等待半秒；静音数据也能触发就绪，不需要先说话来启动。
-录音进程启动后 5 秒仍未收到音频数据会报错、停止进程并清理本次临时资源，不上传音频。启动中重复操作只提示等待，不会开启第二个录音进程。
-自检的 10 秒和语音输入的 3 分钟时限均从就绪后开始计时；这项检测不消除设备或 WebRTC 本身的初始化耗时。
-
-## Ubuntu WebRTC 处理
-
-如果浏览器录音正常，而命令行原始录音存在直流偏移、噪声或失真，不要直接断定麦克风损坏。
-浏览器的 `getUserMedia` 通常包含 WebRTC 处理，例如 webcammictest 默认开启回声消除、降噪和自动增益，和直接用 parecord 录音不是同一条处理链路。
-
-在配置中设为 `"recordingProcessing": "webrtc"`，然后 `/reload` → `/voice-test` 回听 → `/voice` 测试识别。
-
-扩展通过 PulseAudio 的 `module-echo-cancel` / WebRTC 引擎建立本次录音私有的虚拟输入，启用高通、降噪和数字增益，再生成上传的 PCM WAV。
-这是与浏览器同类的处理方式，不保证与 Chrome 的完整链路完全一致；仍需实际说话确认准确率。
-
-- 关闭硬件模拟 AGC 和主设备音量共享，不修改默认输入/输出、系统麦克风音量或硬件 Capture/Boost。
-- 正常停止、异常退出和会话关闭时卸载本次虚拟源，不卸载用户已有的其他音频模块。
-- 需要 `pactl`、`module-echo-cancel` 和 `libwebrtc_audio_processing`；当前 Ubuntu 机器已有这些组件。
-- PipeWire 的兼容层未必支持这个模块；不支持时明确报错，不悄悄回退，可手动改为 `"recordingProcessing": "none"`。
-
-## 麦克风排查
-
-```bash
-pactl info
-pactl list short sources
-# 默认输入应是实际麦克风，不是以 .monitor 结尾的系统声音源
-pactl set-default-source <麦克风source名>
-pactl set-source-mute @DEFAULT_SOURCE@ 0
-```
-
-在 Ubuntu 声音设置的“输入”中检查设备和输入音量。
-若 parecord 存在但无法连接音频服务，会报告 stderr，不会静默切换到另一设备。
-纯 ALSA 环境可指定 `recordingBackend: "arecord"`、合适的 `recordingDevice` 和 `recordingProcessing: "none"`。
-
-空转写或识别不准时：
-
-1. `/voice-test` 开始录音，等待“麦克风启动中”变为“正在录音”并提示“可以说话了”，再正常说话。
-2. 再次 `/voice-test` 停止，查看电平、削波和 DC 偏移，并回听是否清楚、有无杂音或漏字。
-3. `/voice-status` 查看实际输入端口、Capture/Mic Boost 和最近检测结果。
-4. 浏览器正常而原始录音异常时，先尝试 WebRTC 处理；浏览器和处理后的录音都异常时，再排查输入设备和增益。
-
-自检完全在本地，不调用 MiMo、不需要 Key、不修改编辑器或系统音量；音频结束后删除。
-严重削波、严重直流偏移、接近静音或不足 0.25 秒的录音不会上传，也不会自动回放异常信号。
-电平稍低仅提示，不拒绝；电平检测不是语音活动检测，也不保证人声清楚。
-空转写错误会附带录音指标和 `finish_reason`，不直接归因于麦克风。
-
-## API 和隐私
-
-根据 [MiMo 语音识别文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/Speech-Recognition)：
-使用 `mimo-v2.5-asr`、`/v1/chat/completions`，将 WAV 以 `data:audio/wav;base64,...` 传入 `input_audio.data`，并指定 `asr_options.language: "zh"`。
-
-- 录音为 16 kHz / 单声道 / 16-bit PCM WAV；停止时等待录音进程完成文件写入。
-- Base64 编码后最大 10 MB，上传前检查；语音输入最多 3 分钟，到时自动停止识别。
-- 音频发送到 MiMo API，费用以 [MiMo 定价](https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go) 为准。
-- 临时录音在识别完成、失败或会话关闭后删除；Key 不出现在诊断或错误信息中。
-- ASR 请求有 30 秒超时；可选文本清洗默认单独等待最多 5 秒。退出/reload 时取消请求并停止录音和本地回听。
-- 中英混合和专有名词仍可能误写，不添加官方文档未确认的“热词”参数。
-
-## 状态栏
-
-- 🎤 语音输入就绪：等待开始录音。
-- 🎤 ASR 已关闭：语音输入禁用，仍可本地自检。
-- ⏳ 麦克风启动中：正在检查设备/初始化，尚未确认收到音频数据，请等待。
-- 🔴 正在录音：已收到音频数据，可以说话；用于语音输入或本地自检。
-- 🎤 录音处理中：校验/识别录音。
-- ✍️ 口语清洗中：等待 MiMo API 返回整理全文，填回编辑器后请人工复核；失败或超时保留原文。
-- 🔊 麦克风录音回放：本地自检回听，可再次 `/voice-test` 停止。
-
-## 开发验证
-
-```bash
-npm install --ignore-scripts --legacy-peer-deps
-npm test
-npm pack --dry-run
-```
-
-测试使用假录音/回听进程和 Mock API，不读取真实 Key、不录制实际麦克风、不产生 API 用量。VAD 的集成测试使用假模型概率；另有真实 Silero CPU/WASM 的离线测试，验证静音和持续测试音不会被当作人声。
-覆盖 ASR 请求与取消、平台后端、WAV/Base64 校验、电平/削波/DC、本地自检不上传、回听打断与退出清理、输入设备诊断、WebRTC 私有源与初始化竞态、重复操作和草稿保留、默认 F8 与自定义快捷键，以及 VAD 空白/非语音过滤、头尾/长静音裁剪、短回答/短暂停顿、边缘缓冲、WAV 重建、开关/阈值、失败不上传、初始化/推理中的退出清理。
-录音启动测试覆盖仅有 WAV 头/元数据时不亮红灯、未补全长度字段的 WAV、完整静音帧触发就绪、启动超时与重试、启动前后进程异常退出，以及启动中的关闭/重载清理。
-清洗测试使用 Mock MiMo API，覆盖自然整理提示词、纯文本全文输出、允许句式改写/不完全重复/动作与不同单位纠正、文本/凭据隔离、按全文长度预留输出预算、空白/截断/异常响应回退、请求与响应体超时、取消、并发隔离、无重试、完整原文恢复及修改后不覆盖。Mock 测试验证调用和回填行为，不能证明真实模型总能保持原意。
-
-### 显式在线测试（会产生少量费用）
-
-```bash
-npm run test:cleanup-live
-# 先用前 5 条合成文本检查自然改写、重复整理和自我纠正
-npm run test:cleanup-live -- --limit 5
-# 同样的合成文本对比 Pro；不与 Flash 同时运行，以免干扰延迟
-npm run test:cleanup-live -- --model mimo-v2.6-pro
-# 诊断长尾延迟时可临时提高测试等待上限，不修改日常使用配置
-npm run test:cleanup-live -- --timeout-ms 15000
-```
-
-只发送脚本内的 12 条合成文本（可用 `--limit` 减少），不录音、不读会话历史；优先读取 `MIMO_API_KEY`，否则只取 `~/.pi/mimo-voice-zh.json` 的 `apiKey`，不打印 Key。输出各样本整理全文供人工复核，同时报告测试关键内容断言、完整响应耗时、实际 tokens（含缓存/思考）、估算费用和小样本中位数/P95。自然改写不要求逐字匹配固定答案；关键内容断言仅用于这些测试样本，不是生产校验，也不是语义等价证明。断言失败、超时或异常时退出码非零；遇到认证/额度/限流错误停止后续请求。超时或无 usage 的请求费用可能未计入估算；小样本 P95 不是服务延迟保证。`npm test` 不会运行此脚本。
+更多说明：[录音与排查](docs/audio.md) · [口语整理](docs/text-cleanup.md) · [开发与发布](docs/development.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { cleanupTranscriptWithMetrics, DEFAULT_CLEANUP_SETTINGS, validateCleanupSettings } from "../cleanup.ts";
+import { cleanupTranscriptWithMetrics, DEFAULT_CLEANUP_SETTINGS, validateCleanupSettings } from "../src/cleanup.ts";
 
 interface Sample {
 	name: string;

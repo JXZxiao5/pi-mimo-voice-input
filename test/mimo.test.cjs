@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { createJiti } = require('jiti');
-const { wav } = require('./helpers.cjs');
-const api = createJiti(__filename)('../mimo.ts');
+const { wav } = require('./support/helpers.cjs');
+const api = createJiti(__filename)('../src/mimo.ts');
 
 function sample(t) {
   const dir = fs.mkdtempSync(join(tmpdir(), 'mimo-test-'));
@@ -21,6 +21,7 @@ test('ASR request matches official MiMo API schema and trims transcript', async 
     assert.equal(url, 'https://api.xiaomimimo.com/v1/chat/completions');
     assert.equal(opts.headers['api-key'], 'test-key');
     assert.equal(opts.method, 'POST');
+    assert.equal(opts.redirect, 'error');
     const body = JSON.parse(opts.body);
     assert.equal(body.model, 'mimo-v2.5-asr');
     assert.deepEqual(body.asr_options, { language: 'zh' });
@@ -41,14 +42,39 @@ test('ASR also accepts text content blocks without misreporting an empty transcr
   assert.equal(await api.callASR(path, 'test-key'), '测试中文。');
 });
 
-test('HTTP errors include actionable status but never the key', async t => {
+test('HTTP errors expose only status, never service bodies, keys, transcripts, or gateway details', async t => {
   const path = sample(t);
-  t.mock.method(global, 'fetch', async () => Response.json({ error: { message: 'invalid secret-key' } }, { status: 401 }));
-  await assert.rejects(api.callASR(path, 'secret-key'), error => {
-    assert.match(error.message, /HTTP 401/);
-    assert.ok(!error.message.includes('secret-key'));
-    return true;
-  });
+  for (const status of [400, 401, 403, 429, 500, 503]) {
+    let cancelled = false;
+    const fetch = t.mock.method(global, 'fetch', async () => ({
+      ok: false, status,
+      body: { cancel: async () => { cancelled = true; } },
+      json: async () => { throw new Error('secret-key PRIVATE_TRANSCRIPT PRIVATE_GATEWAY'); },
+    }));
+    await assert.rejects(api.callASR(path, 'secret-key'), error => {
+      assert.match(error.message, new RegExp(`HTTP ${status}`));
+      assert.ok(!/secret-key|PRIVATE_TRANSCRIPT|PRIVATE_GATEWAY/.test(error.message));
+      return true;
+    });
+    assert.equal(cancelled, true);
+    assert.equal(fetch.mock.callCount(), 1, 'HTTP failures do not retry');
+    fetch.mock.restore();
+  }
+});
+
+test('network and invalid JSON errors never expose raw exceptions', async t => {
+  const path = sample(t);
+  for (const phase of ['network', 'json']) {
+    const fail = async () => { throw new Error('secret-key PRIVATE_TRANSCRIPT PRIVATE_GATEWAY'); };
+    const fetch = t.mock.method(global, 'fetch', phase === 'network' ? fail : async () => ({ ok: true, json: fail }));
+    await assert.rejects(api.callASR(path, 'secret-key'), error => {
+      assert.match(error.message, phase === 'network' ? /网络请求失败/ : /不是有效 JSON/);
+      assert.ok(!/secret-key|PRIVATE_TRANSCRIPT|PRIVATE_GATEWAY/.test(error.message));
+      return true;
+    });
+    assert.equal(fetch.mock.callCount(), 1);
+    fetch.mock.restore();
+  }
 });
 
 test('empty transcript and empty recording are clear errors, no empty upload', async t => {
@@ -71,5 +97,5 @@ test('ASR-only API surface and caller cancellation', async t => {
   assert.equal(await api.callASR(path, 'test-key'), '你好');
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(api.callASR(path, 'test-key', controller.signal), /aborted/);
+  await assert.rejects(api.callASR(path, 'test-key', controller.signal), /已取消/);
 });

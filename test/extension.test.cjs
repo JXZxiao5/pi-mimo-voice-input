@@ -2,9 +2,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { basename, join } = require('node:path');
 const { createJiti } = require('jiti');
-const { wav, executable, waitFor } = require('./helpers.cjs');
+const { wav, executable, waitFor } = require('./support/helpers.cjs');
 
 async function setup(t, recorderFails = false, sample = wav(), config = {}, vadOptions = {}, recorderOptions = {}) {
   const home = fs.mkdtempSync(join(tmpdir(), 'mimo-extension-test-'));
@@ -60,7 +60,7 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   `);
   const factory = createJiti(__filename, {
     moduleCache: false,
-    alias: { 'onnxruntime-web': join(__dirname, 'fake-ort.cjs') },
+    alias: { 'onnxruntime-web': join(__dirname, 'support/fake-ort.cjs') },
   })('../index.ts').default;
   const ctx = {
     hasUI: true, mode: 'tui',
@@ -142,6 +142,7 @@ test('/voice waits for WAV finalization, preserves draft, blocks duplicate ASR, 
   await app.calls.get('voice')();
   assert.match(app.status, /正在录音/);
   const path = await app.ready();
+  assert.ok(basename(join(path, '..')).startsWith('pi-mimo-voice-input-'));
   const stopping = app.calls.get('voice')();
   await app.calls.get('voice')();
   assert.ok(app.notices.some(n => n.text === '正在识别，请稍候'));
@@ -250,7 +251,7 @@ test('default F8 shortcut toggles voice capture and recognizes into the editor',
   assert.ok(app.calls.has('f8'));
   assert.ok(!app.calls.has('ctrl+shift+v'));
   assert.ok(!app.calls.has('f12'));
-  const example = JSON.parse(fs.readFileSync(join(__dirname, '../mimo-voice-zh.example.json'), 'utf8'));
+  const example = JSON.parse(fs.readFileSync(join(__dirname, '../examples/mimo-voice-input.example.json'), 'utf8'));
   assert.equal(example.sttShortcut, 'f8');
   const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {
     assert.equal(JSON.parse(opts.body).model, 'mimo-v2.5-asr');
@@ -536,7 +537,7 @@ test('ASR failure removes both the original and VAD-trimmed audio', async t => {
   const path = await app.ready();
   await app.calls.get('voice')();
   assert.equal(fetch.mock.callCount(), 1);
-  assert.ok(app.notices.some(n => n.level === 'error' && n.text.includes('mock network failure')));
+  assert.ok(app.notices.some(n => n.level === 'error' && n.text.includes('MiMo ASR 网络请求失败')));
   assert.deepEqual(fs.readdirSync(join(path, '..')), []);
   assert.equal(app.editor, '已有草稿');
   assert.match(app.status, /语音输入就绪/);
