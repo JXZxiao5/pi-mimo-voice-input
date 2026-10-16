@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 export type RecordingBackend = "auto" | "parecord" | "arecord" | "sox";
@@ -21,6 +21,7 @@ export interface AudioProcess {
 
 export const MAX_BASE64_BYTES = 10_000_000;
 export const MAX_RECORDING_MS = 180_000;
+export const RECORDING_START_TIMEOUT_MS = 5000;
 
 export function commandExists(command: string): boolean {
 	return (process.env.PATH ?? "").split(delimiter).some((dir) => {
@@ -107,6 +108,83 @@ export function startAudioProcess(command: AudioCommand): AudioProcess {
 		});
 	});
 	return state;
+}
+
+/** 录音中的 WAV 长度字段可能尚未补全，只检查 data 块实际写入的完整 PCM 帧。 */
+function hasRecordedAudio(path: string): boolean {
+	let fd: number;
+	try {
+		fd = openSync(path, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+	try {
+		const size = fstatSync(fd).size;
+		const header = Buffer.alloc(16);
+		if (readSync(fd, header, 0, 12, 0) !== 12
+			|| header.toString("ascii", 0, 4) !== "RIFF"
+			|| header.toString("ascii", 8, 12) !== "WAVE") return false;
+		let frameBytes = 0;
+		for (let offset = 12; offset + 8 <= size;) {
+			if (readSync(fd, header, 0, 8, offset) !== 8) return false;
+			const id = header.toString("ascii", 0, 4);
+			const chunkSize = header.readUInt32LE(4);
+			if (id === "data") return frameBytes > 0 && size - offset - 8 >= frameBytes;
+			if (offset + 8 + chunkSize > size) return false;
+			if (id === "fmt ") {
+				if (chunkSize < 16 || readSync(fd, header, 0, 16, offset + 8) !== 16) return false;
+				const channels = header.readUInt16LE(2);
+				if (header.readUInt16LE(0) !== 1 || header.readUInt16LE(14) !== 16
+					|| !channels || header.readUInt16LE(12) !== channels * 2) return false;
+				frameBytes = channels * 2;
+			}
+			offset += 8 + chunkSize + (chunkSize % 2);
+		}
+		return false;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/** 收到音频数据（包括静音）才算就绪；不等待人声，也不要求 WAV 头已补全。 */
+export function waitForRecordingReady(
+	state: AudioProcess,
+	wavPath: string,
+	signal?: AbortSignal,
+	timeoutMs = RECORDING_START_TIMEOUT_MS,
+): Promise<void> {
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		let pollTimer: ReturnType<typeof setTimeout> | undefined;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const finish = (error?: Error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(pollTimer);
+			clearTimeout(timeout);
+			signal?.removeEventListener("abort", abort);
+			if (error) reject(error);
+			else resolve();
+		};
+		const abort = () => finish(new Error("麦克风启动已取消"));
+		if (signal?.aborted) { abort(); return; }
+		signal?.addEventListener("abort", abort, { once: true });
+		void state.closed.then((result) => finish(result.error ?? new Error(result.stderr
+			|| `录音进程在开始采集前退出：${result.code ?? result.signal}`)));
+		const poll = () => {
+			if (settled || state.exited) return;
+			try {
+				if (hasRecordedAudio(wavPath)) { finish(); return; }
+			} catch (error) {
+				finish(error as Error);
+				return;
+			}
+			pollTimer = setTimeout(poll, 25);
+		};
+		timeout = setTimeout(() => finish(new Error("麦克风启动超时，未收到音频数据；请检查输入设备和音频服务后重试")), timeoutMs);
+		poll();
+	});
 }
 
 /** SIGINT 让录音工具补全 WAV 头；必须等 close 后才能读取或删除文件。 */

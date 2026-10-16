@@ -6,12 +6,13 @@ const { join } = require('node:path');
 const { createJiti } = require('jiti');
 const { wav, executable, waitFor } = require('./helpers.cjs');
 
-async function setup(t, recorderFails = false, sample = wav(), config = {}, vadOptions = {}) {
+async function setup(t, recorderFails = false, sample = wav(), config = {}, vadOptions = {}, recorderOptions = {}) {
   const home = fs.mkdtempSync(join(tmpdir(), 'mimo-extension-test-'));
   const bin = join(home, 'bin');
   fs.mkdirSync(bin);
   fs.mkdirSync(join(home, '.pi'));
   fs.writeFileSync(join(home, 'vad-options.json'), JSON.stringify(vadOptions));
+  fs.writeFileSync(join(home, 'recorder-options.json'), JSON.stringify(recorderOptions));
   fs.writeFileSync(join(home, '.pi/mimo-voice-zh.json'), JSON.stringify({
     apiKey: 'fake-api-key', sttEnabled: true, ...config,
   }));
@@ -22,6 +23,7 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   const calls = new Map();
   const events = new Map();
   const notices = [];
+  const statuses = [];
   let editor = '已有草稿';
   let status = '';
   let recordingPath;
@@ -34,9 +36,16 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
         fs.writeFileSync(path, Buffer.from('${sample.toString('base64')}', 'base64'));
         process.exit(0);
       }, 150));
-      fs.writeFileSync(path, 'unfinished');
+      const sample = Buffer.from('${sample.toString('base64')}', 'base64');
+      const header = Buffer.from(sample.subarray(0, 44));
+      header.writeUInt32LE(0xffffffff, 4);
+      header.writeUInt32LE(0xffffffff, 40);
+      fs.writeFileSync(path, header);
       fs.writeFileSync('${join(home, 'recording-path')}', path);
+      fs.writeFileSync('${join(home, 'recorder-pid')}', String(process.pid));
       fs.writeFileSync('${join(home, 'recorder-args')}', JSON.stringify(process.argv.slice(2)));
+      const options = JSON.parse(fs.readFileSync('${join(home, 'recorder-options.json')}', 'utf8'));
+      if (!options.manualAudio) setTimeout(() => fs.appendFileSync(path, sample.subarray(44)), 0);
       setInterval(() => {}, 1000);
     `);
   executable(join(bin, 'paplay'), `
@@ -52,7 +61,7 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
     hasUI: true, mode: 'tui',
     ui: {
       notify: (text, level) => notices.push({ text, level }),
-      setStatus: (_key, value) => { status = value; },
+      setStatus: (_key, value) => { status = value; statuses.push(value); },
       getEditorText: () => editor,
       setEditorText: value => { editor = value; },
     },
@@ -70,7 +79,7 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   });
   await events.get('session_start')({}, ctx);
   return {
-    ctx, notices, calls, events, home,
+    ctx, notices, statuses, calls, events, home,
     get status() { return status; },
     get editor() { return editor; },
     async ready() {
@@ -124,6 +133,95 @@ test('/voice waits for WAV finalization, preserves draft, blocks duplicate ASR, 
   assert.equal(fs.existsSync(dir), false);
 });
 
+test('voice, F8, and self-test show startup until actual audio arrives and reject duplicate starts', async t => {
+  for (const command of ['voice', 'f8', 'voice-test']) {
+    await t.test(command, async t => {
+      const app = await setup(t, false, wav(), {}, {}, { manualAudio: true });
+      const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('startup must not upload'); });
+      const pending = app.calls.get(command)();
+      assert.match(app.status, /麦克风启动中/);
+      const path = await app.ready();
+      assert.equal(fs.statSync(path).size, 44, 'recorder has only written an unfinished WAV header');
+      assert.ok(!app.statuses.some(s => s.includes('正在录音')));
+      assert.ok(!app.notices.some(n => n.text.includes('可以说话了')));
+      await app.calls.get(command)();
+      assert.match(app.notices.at(-1).text, /麦克风正在启动/);
+      assert.ok(!app.notices.some(n => n.text.includes('正在识别')));
+      fs.appendFileSync(path, Buffer.alloc(2)); // A silent PCM frame is sufficient.
+      await pending;
+      assert.match(app.status, /正在录音/);
+      assert.equal(app.notices.filter(n => n.text.includes('可以说话了')).length, 1);
+      assert.ok(!app.notices.some(n => n.text.includes('等约半秒')));
+      assert.equal(fetch.mock.callCount(), 0);
+      await app.events.get('session_shutdown')({}, app.ctx);
+      assert.equal(fs.existsSync(path), false);
+    });
+  }
+});
+
+test('startup timeout stops the recorder, unloads WebRTC, deletes audio, and allows retry', async t => {
+  const app = await setup(t, false, wav(), { recordingProcessing: 'webrtc' }, {}, { manualAudio: true });
+  const calls = installWebrtcPulse(app);
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('timeout must not upload'); });
+  const pending = app.calls.get('voice-test')();
+  const path = await app.ready();
+  const pid = Number(fs.readFileSync(join(app.home, 'recorder-pid'), 'utf8'));
+  assert.match(app.status, /麦克风启动中/);
+  await pending;
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  assert.equal(fs.existsSync(path), false);
+  assert.deepEqual(calls().filter(x => x[0] === 'unload-module'), [['unload-module', '35']]);
+  assert.equal(app.notices.filter(n => n.level === 'error').length, 1);
+  assert.ok(app.notices.some(n => /启动超时.*未收到音频数据/.test(n.text)));
+  assert.ok(!app.notices.some(n => n.text.includes('可以说话了')));
+  assert.ok(!app.statuses.some(s => s.includes('正在录音')));
+  assert.match(app.status, /语音输入就绪/);
+  assert.equal(app.editor, '已有草稿');
+  assert.equal(fetch.mock.callCount(), 0);
+  fs.writeFileSync(join(app.home, 'recorder-options.json'), '{}');
+  await app.calls.get('voice-test')();
+  assert.match(app.status, /正在录音/);
+});
+
+test('shutdown during startup cancels readiness without stale UI, cleans resources, and permits a new session', async t => {
+  const app = await setup(t, false, wav(), { recordingProcessing: 'webrtc' }, {}, { manualAudio: true });
+  const calls = installWebrtcPulse(app);
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('shutdown must not upload'); });
+  const pending = app.calls.get('voice-test')();
+  const path = await app.ready();
+  const pid = Number(fs.readFileSync(join(app.home, 'recorder-pid'), 'utf8'));
+  const notices = app.notices.length;
+  const statuses = app.statuses.length;
+  await app.events.get('session_shutdown')({}, app.ctx);
+  await pending;
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  assert.equal(fs.existsSync(join(path, '..')), false);
+  assert.equal(app.notices.length, notices);
+  assert.equal(app.statuses.length, statuses);
+  assert.deepEqual(calls().filter(x => x[0] === 'unload-module'), [['unload-module', '35']]);
+  assert.equal(fetch.mock.callCount(), 0);
+  fs.writeFileSync(join(app.home, 'recorder-options.json'), '{}');
+  await app.events.get('session_start')({}, app.ctx);
+  await app.calls.get('voice-test')();
+  assert.match(app.status, /正在录音/);
+  assert.equal(app.notices.filter(n => n.text.includes('可以说话了')).length, 1);
+});
+
+test('unexpected recorder exit after readiness still cleans state and reports exactly one error', async t => {
+  const app = await setup(t);
+  const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('failed capture must not upload'); });
+  await app.calls.get('voice')();
+  const path = await app.ready();
+  process.kill(Number(fs.readFileSync(join(app.home, 'recorder-pid'), 'utf8')), 'SIGTERM');
+  await waitFor(() => app.notices.some(n => n.level === 'error'));
+  assert.equal(app.notices.filter(n => n.level === 'error').length, 1);
+  assert.equal(fs.existsSync(path), false);
+  assert.match(app.status, /语音输入就绪/);
+  assert.equal(fetch.mock.callCount(), 0);
+  await app.calls.get('voice')();
+  assert.match(app.status, /正在录音/);
+});
+
 test('default F8 shortcut toggles voice capture and recognizes into the editor', async t => {
   const app = await setup(t);
   assert.ok(app.calls.has('f8'));
@@ -175,8 +273,10 @@ test('early nonzero recorder exit clears state and shows stderr without calling 
   assert.match(app.status, /语音输入就绪/);
   assert.equal(fetch.mock.callCount(), 0);
   await app.calls.get('voice')();
-  assert.match(app.status, /正在录音/);
-  await waitFor(() => app.notices.filter(n => n.text.includes('麦克风连接失败')).length === 2);
+  assert.equal(app.notices.filter(n => n.text.includes('麦克风连接失败')).length, 2);
+  assert.match(app.status, /语音输入就绪/);
+  assert.ok(!app.statuses.some(s => s.includes('正在录音')));
+  assert.ok(!app.notices.some(n => n.text.includes('可以说话了')));
 });
 
 test('shutdown stops recorder, deletes temp directory, and does not transcribe', async t => {
@@ -309,8 +409,14 @@ test('shutdown cleans up an active WebRTC module and a late module initializatio
     const calls = installWebrtcPulse(app, 250);
     const pending = app.calls.get('voice-test')();
     await waitFor(() => calls().some(x => x[0] === 'load-module'));
+    assert.match(app.status, /麦克风启动中/);
+    assert.ok(!app.notices.some(n => n.text.includes('可以说话了')));
+    const notices = app.notices.length;
+    const statuses = app.statuses.length;
     await app.events.get('session_shutdown')({}, app.ctx);
     await pending;
+    assert.equal(app.notices.length, notices);
+    assert.equal(app.statuses.length, statuses);
     assert.equal(fs.existsSync(join(app.home, 'recording-path')), false);
     assert.deepEqual(calls().filter(x => x[0] === 'unload-module'), [['unload-module', '35']]);
   });
