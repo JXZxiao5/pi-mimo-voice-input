@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	MAX_RECORDING_MS, playbackCommand, recordingCommand,
-	startAudioProcess, stopAudioProcess,
+	startAudioProcess, stopAudioProcess, waitForRecordingReady,
 	type AudioProcess, type RecordingBackend,
 } from "./audio.ts";
 import { callASR, errorMessage } from "./mimo.ts";
@@ -72,6 +72,7 @@ function cleanupOldTmpDirs(): void {
 interface Recording {
 	process: AudioProcess;
 	path: string;
+	ready: boolean;
 	stopping: boolean;
 	test: boolean;
 	input?: ProcessedInput;
@@ -113,7 +114,8 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		ctx.ui.setStatus("mimo-voice", recording && !recording.stopping ? `🔴 正在录音${recording.test ? "（本地自检）" : ""}`
+		ctx.ui.setStatus("mimo-voice", starting ? "⏳ 麦克风启动中"
+			: recording?.ready && !recording.stopping ? `🔴 正在录音${recording.test ? "（本地自检）" : ""}`
 			: replaying ? "🔊 麦克风录音回放"
 			: recognizing ? "🎤 录音处理中"
 			: settings.sttEnabled ? "🎤 语音输入就绪" : "🎤 ASR 已关闭");
@@ -155,7 +157,11 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 			updateStatus(ctx);
 			return;
 		}
-		if (starting || recognizing || recording?.stopping) {
+		if (starting) {
+			ctx.ui.notify("麦克风正在启动，请等待“可以说话”提示", "warning");
+			return;
+		}
+		if (recognizing || recording?.stopping) {
 			ctx.ui.notify("正在识别，请稍候", "warning");
 			return;
 		}
@@ -249,9 +255,13 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 
 		let path: string | undefined;
 		let input: ProcessedInput | undefined;
-		let attached = false;
+		let pendingRecording: Recording | undefined;
+		let ready = false;
 		const session = sessionGen;
+		const signal = requests.signal;
 		starting = true;
+		updateStatus(ctx);
+		ctx.ui.notify("⏳ 麦克风启动中，请等待“可以说话”提示", "info");
 		try {
 			const backend = recordingCommand("", settings.recordingBackend, settings.recordingDevice);
 			if (!test) {
@@ -279,39 +289,55 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 			path = audioPath("stt");
 			const command = recordingCommand(path, settings.recordingBackend, input?.source || settings.recordingDevice);
 			const current: Recording = {
-				process: startAudioProcess(command), path, stopping: false, test, input,
+				process: startAudioProcess(command), path, ready: false, stopping: false, test, input,
 			};
+			pendingRecording = current;
 			recording = current;
-			attached = true;
-			current.timer = setTimeout(() => {
-				if (recording !== current || current.stopping) return;
-				ctx.ui.notify(test ? "10 秒自检结束，自动停止" : "已达到 3 分钟录音上限，自动停止并识别", "warning");
-				void sttHandler(ctx, test);
-			}, test ? 10_000 : MAX_RECORDING_MS);
 			void current.process.closed.then(async (result) => {
-				if (recording !== current || current.stopping) return;
+				// 启动中的退出交给就绪等待处理，避免重复报错或提前显示红灯。
+				if (!current.ready || recording !== current || current.stopping) return;
 				clearTimeout(current.timer);
 				recording = null;
 				await releaseInput(current.input, ctx);
 				removeFile(current.path);
-				if (!active) return;
+				if (!active || session !== sessionGen) return;
 				updateStatus(ctx);
 				ctx.ui.notify(`录音失败 (${command.command}): ${errorMessage(
 					result.error ?? new Error(result.stderr || `录音进程意外退出：${result.code ?? result.signal}`),
 					settings.apiKey,
 				)}`, "error");
 			});
+			await waitForRecordingReady(current.process, path, signal);
+			if (!active || session !== sessionGen || recording !== current) return;
+			current.ready = true;
+			ready = true;
+			starting = false;
+			// 录音时限从真正就绪开始，不占用用户等待设备启动的时间。
+			current.timer = setTimeout(() => {
+				if (recording !== current || current.stopping) return;
+				ctx.ui.notify(test ? "10 秒自检结束，自动停止" : "已达到 3 分钟录音上限，自动停止并识别", "warning");
+				void sttHandler(ctx, test);
+			}, test ? 10_000 : MAX_RECORDING_MS);
 			updateStatus(ctx);
-			ctx.ui.notify(`🔴 ${test ? "本地自检" : "录音中"}，等约半秒再说话；${test ? "再次运行 /voice-test 停止（不会上传）" : `再次按 ${settings.sttShortcut} 或运行 /voice 停止`}`, "info");
+			ctx.ui.notify(`🔴 ${test ? "本地自检" : "录音中"}，可以说话了；${test ? "再次运行 /voice-test 停止（不会上传）" : `再次按 ${settings.sttShortcut} 或运行 /voice 停止`}`, "info");
 		} catch (error) {
-			if (path) removeFile(path);
 			if (active && session === sessionGen) {
 				ctx.ui.notify(`录音失败: ${errorMessage(error, settings.apiKey)}`, "error");
-				updateStatus(ctx);
 			}
 		} finally {
-			if (!attached) await releaseInput(input);
-			if (session === sessionGen) starting = false;
+			if (!ready) {
+				if (pendingRecording) {
+					pendingRecording.stopping = true;
+					await stopAudioProcess(pendingRecording.process).catch(() => {});
+					if (recording === pendingRecording) recording = null;
+				}
+				await releaseInput(input);
+				if (path) removeFile(path);
+			}
+			if (session === sessionGen) {
+				starting = false;
+				if (active) updateStatus(ctx);
+			}
 		}
 	}
 
