@@ -22,6 +22,8 @@ pi-mimo-voice-input/
 ├── test/
 │   ├── *.test.cjs           # 单元、集成和发布包测试
 │   └── support/             # 假推理后端、WAV/进程辅助函数
+├── README.md                # 中文安装与使用说明
+├── README.en.md             # 英文安装与使用说明
 ├── CHANGELOG.md             # 版本变更记录
 ├── LICENSE
 ├── package.json
@@ -31,7 +33,7 @@ pi-mimo-voice-input/
 Pi 通过 `package.json` 的 `pi.extensions` 加载根目录 `index.ts`，不需要构建步骤。
 保留此入口可兼容本地目录安装和 `pi --extension ./index.ts`；实现代码统一放在 `src/`。
 项目包名为 `pi-mimo-voice-input`；本地仓库目录不要求改名，安装时使用实际路径。
-现有 Git 仓库 URL 不随 npm 包名自动变更，待远端仓库实际改名后再同步 `repository.url`。
+GitHub 仓库为 [JXZxiao5/pi-mimo-voice-input](https://github.com/JXZxiao5/pi-mimo-voice-input)，`repository.url` 已同步。
 为兼容已有用户，配置路径仍为 `~/.pi/mimo-voice-zh.json`，无须迁移 Key 或偏好设置。
 
 ## 离线测试
@@ -72,10 +74,11 @@ npm run test:cleanup-live -- --timeout-ms 15000
 
 ## npm 发布流程
 
-当前准备版本为 `0.1.0`。`publishConfig` 已指定公共 registry `https://registry.npmjs.org/` 和公开访问；
-不需要向 Pi 主仓库提交扩展代码。发布后，`pi-package` 关键词让包具备被 Pi Gallery 发现的资格，索引并非即时。
+首版 [`pi-mimo-voice-input@0.1.0`](https://www.npmjs.com/package/pi-mimo-voice-input) 已发布。
+`publishConfig` 已指定公共 registry `https://registry.npmjs.org/` 和公开访问；不需要向 Pi 主仓库提交扩展代码。
+`pi-package` 关键词让包具备被 Pi Gallery 发现的资格，索引并非即时。
 
-完成下方检查后，由维护者手动执行：
+后续发布时，先更新版本号和锁文件，完成下方检查，再由维护者手动执行（已发布版本不能覆盖）：
 
 ```bash
 npm login --registry=https://registry.npmjs.org
@@ -98,7 +101,7 @@ npm 包不含 `.git`，发布 npm 不要求同时公开 Git 历史，但 npm 账
 
 1. 复核 `CHANGELOG.md` 的本次版本条目，确认版本号和日期；同步 `package.json` 与锁文件版本。
 2. 运行 `npm ci --ignore-scripts --legacy-peer-deps`、`npm test` 和 `npm pack --dry-run`。
-3. 确认包内只有入口、`src/*.ts`、配置示例、文档、更新日志、许可证和清单；不包含测试、脚本、Git 元数据或本地配置。
+3. 确认包内只有入口、`src/*.ts`、配置示例、中英文 README、文档、更新日志、许可证和清单；不包含测试、脚本、Git 元数据或本地配置。
 4. 本地回归 `/voice-test`、`/voice`、F8、`/voice-status`，启用整理后验证 `/voice-raw`。真实设备与在线 API 需人工显式测试。
 5. 使用凭据扫描器检查工作区和完整 Git 历史，检查所有 URL、内部域名、私有 IP、代理、网关及远端配置。可使用 Gitleaks：
 

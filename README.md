@@ -1,6 +1,9 @@
 # pi-mimo-voice-input
 
+简体中文 | [English](README.en.md)
+
 小米 MiMo 中文语音输入扩展，支持 Ubuntu/Linux 和 macOS，提供本地人声检测、录音自检及可选口语整理。
+默认启用本地 Silero VAD，支持可选 PulseAudio WebRTC 录音处理；仅提供语音输入，不包含 AI 回复语音播放。
 
 ## 1. 安装
 
@@ -13,7 +16,7 @@ sudo apt install pulseaudio-utils alsa-utils
 brew install sox
 ```
 
-npm 安装（首版 `0.1.0` 发布后可用）：
+通过 npm 安装（已发布 [pi-mimo-voice-input@0.1.0](https://www.npmjs.com/package/pi-mimo-voice-input)）：
 
 ```bash
 pi install npm:pi-mimo-voice-input
@@ -22,9 +25,10 @@ pi install npm:pi-mimo-voice-input
 本地安装 / 开发：
 
 ```bash
-cd /absolute/path/to/pi-mimo-voice-input
+git clone https://github.com/JXZxiao5/pi-mimo-voice-input.git
+cd pi-mimo-voice-input
 npm ci --ignore-scripts --legacy-peer-deps
-pi install /absolute/path/to/pi-mimo-voice-input
+pi install "$PWD"
 ```
 
 不要同时加载本地版本与 npm 版本；切换前用 `pi remove <原安装来源>` 移除旧声明（旧包为 `npm:pi-mimo-voice-zh`）。
