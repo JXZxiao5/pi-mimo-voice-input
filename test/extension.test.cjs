@@ -11,6 +11,11 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   const bin = join(home, 'bin');
   fs.mkdirSync(bin);
   fs.mkdirSync(join(home, '.pi'));
+  // Detect accidental CLI fallback without depending on the discarded Codex service.
+  executable(join(bin, 'codex'), `
+    require('node:fs').writeFileSync(${JSON.stringify(join(home, 'codex-pid'))}, String(process.pid));
+    process.exit(1);
+  `);
   fs.writeFileSync(join(home, 'vad-options.json'), JSON.stringify(vadOptions));
   fs.writeFileSync(join(home, 'recorder-options.json'), JSON.stringify(recorderOptions));
   fs.writeFileSync(join(home, '.pi/mimo-voice-zh.json'), JSON.stringify({
@@ -90,6 +95,24 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
     },
     get played() { return fs.existsSync(join(home, 'played')); },
   };
+}
+
+function mockVoiceAPI(t, raw, cleaned = raw, options = {}) {
+  const cleanupCalls = [];
+  const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.model === 'mimo-v2.5-asr') return Response.json({ choices: [{ message: { content: raw } }] });
+    cleanupCalls.push({ body, signal: opts.signal });
+    if (options.hang) await new Promise((_, reject) => {
+      if (opts.signal.aborted) reject(opts.signal.reason);
+      else opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true });
+    });
+    if (options.delayMs) await new Promise(resolve => setTimeout(resolve, options.delayMs));
+    if (options.status) return Response.json({ error: { message: 'SECRET_AUTH fake-api-key PRIVATE_TRANSCRIPT' } }, { status: options.status });
+    return Response.json({ choices: [{ finish_reason: options.finishReason ?? 'stop', message: { role: 'assistant',
+      content: cleaned, tool_calls: options.toolCalls } }] });
+  });
+  return { fetch, cleanupCalls };
 }
 
 function installWebrtcPulse(app, loadDelay = 0, fail = false) {
@@ -251,7 +274,7 @@ test('custom shortcuts override F8 without rewriting existing preferences', asyn
       const app = await setup(t, false, wav(), { sttShortcut });
       const configPath = join(app.home, '.pi/mimo-voice-zh.json');
       const before = fs.readFileSync(configPath, 'utf8');
-      assert.deepEqual([...app.calls.keys()].sort(), [sttShortcut, 'voice', 'voice-status', 'voice-test']);
+      assert.deepEqual([...app.calls.keys()].sort(), [sttShortcut, 'voice', 'voice-raw', 'voice-status', 'voice-test']);
       await app.calls.get(sttShortcut)();
       const path = await app.ready();
       assert.match(app.status, /正在录音/);
@@ -313,7 +336,7 @@ test('shutdown aborts in-flight ASR without stale notifications or editor writes
 test('extension only registers speech-input commands and diagnostics never expose key', async t => {
   const app = await setup(t);
   const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('diagnostics must not call API'); });
-  assert.deepEqual([...app.calls.keys()].sort(), ['f8', 'voice', 'voice-status', 'voice-test']);
+  assert.deepEqual([...app.calls.keys()].sort(), ['f8', 'voice', 'voice-raw', 'voice-status', 'voice-test']);
   assert.deepEqual([...app.events.keys()].sort(), ['session_shutdown', 'session_start']);
   await app.calls.get('voice-status')();
   const notice = app.notices.at(-1).text;
@@ -611,6 +634,200 @@ test('custom VAD threshold is applied without overwriting existing configuration
   assert.equal(fetch.mock.callCount(), 0);
   assert.ok(app.notices.some(n => n.text.includes('未检测到有效人声')));
   assert.equal(fs.readFileSync(configPath, 'utf8'), original);
+});
+
+test('MiMo cleans ASR text, preserves draft, and restores raw input without another request or Codex', async t => {
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true, codexProxy: 'ignored-invalid-proxy' });
+  const { fetch, cleanupCalls } = mockVoiceAPI(t, '设置成五次，不对，八次，但不要超过十次。', '设置成八次，但不要超过十次。');
+  await app.calls.get('voice')();
+  await app.ready();
+  assert.equal(fetch.mock.callCount(), 0, 'recording never prewarms or calls a model');
+  await app.calls.get('voice')();
+  assert.equal(app.editor, '已有草稿\n设置成八次，但不要超过十次。');
+  assert.ok(app.statuses.includes('✍️ 口语清洗中'));
+  assert.ok(app.notices.some(n => n.text.includes('/voice-raw 可恢复')));
+  assert.equal(cleanupCalls.length, 1);
+  assert.equal(cleanupCalls[0].body.model, 'mimo-v2.6-flash');
+  assert.ok(!JSON.stringify(cleanupCalls[0].body).includes('已有草稿'));
+  assert.equal(fs.existsSync(join(app.home, 'codex-pid')), false);
+  await app.calls.get('voice-status')();
+  assert.match(app.notices.at(-1).text, /MiMo API \/ mimo-v2.6-flash；思考已关闭；超时 5 秒/);
+  assert.match(app.notices.at(-1).text, /已整理，待人工复核（[\d.]+ 秒）/);
+  assert.match(app.notices.at(-1).text, /自然整理，允许改写，请复核/);
+  assert.ok(!/设置成五次|fake-api-key|ignored-invalid-proxy/.test(app.notices.at(-1).text));
+  await app.calls.get('voice-raw')();
+  assert.equal(app.editor, '已有草稿\n设置成五次，不对，八次，但不要超过十次。');
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
+test('full-sentence rewrites are filled for human review and /voice-raw restores the exact original', async t => {
+  const raw = '你能给我看一下，呃，你给的清洗的提示词，以及你你设置的什么规则呀？';
+  const rewritten = '你能给我看一下清洗提示词，以及你设置了哪些规则吗？';
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true });
+  const { fetch, cleanupCalls } = mockVoiceAPI(t, raw, rewritten);
+  await app.calls.get('voice')();
+  await app.calls.get('voice')();
+  assert.equal(app.editor, '已有草稿\n' + rewritten);
+  assert.deepEqual(cleanupCalls[0].body.response_format, { type: 'text' });
+  assert.ok(!app.notices.some(n => n.level === 'warning' || n.level === 'error'));
+  await app.calls.get('voice-status')();
+  assert.match(app.notices.at(-1).text, /已整理，待人工复核/);
+  assert.ok(!app.notices.at(-1).text.includes(raw));
+  await app.calls.get('voice-raw')();
+  assert.equal(app.editor, '已有草稿\n' + raw);
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
+test('unchanged model output is a successful no-op rather than a safety rejection', async t => {
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true });
+  mockVoiceAPI(t, '检查一下。');
+  await app.calls.get('voice')();
+  await app.calls.get('voice')();
+  assert.equal(app.editor, '已有草稿\n检查一下。');
+  await app.calls.get('voice-status')();
+  assert.match(app.notices.at(-1).text, /文本清洗: 无需调整/);
+  await app.calls.get('voice-raw')();
+  assert.match(app.notices.at(-1).text, /没有可恢复/);
+});
+
+test('typing during MiMo cleanup is preserved and duplicate commands do not issue more requests', async t => {
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true });
+  const { fetch, cleanupCalls } = mockVoiceAPI(t, '呃，检查一下。', '检查一下。', { delayMs: 250 });
+  await app.calls.get('voice')();
+  await app.ready();
+  const pending = app.calls.get('voice')();
+  await waitFor(() => cleanupCalls.length === 1);
+  app.ctx.ui.setEditorText('清洗期间的新草稿');
+  await app.calls.get('voice')();
+  assert.match(app.notices.at(-1).text, /正在识别，请稍候/);
+  await pending;
+  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(app.editor, '清洗期间的新草稿\n检查一下。');
+  await app.calls.get('voice-raw')();
+  assert.equal(app.editor, '清洗期间的新草稿\n呃，检查一下。');
+});
+
+test('restore never overwrites a changed draft, and reload forgets the raw transcript', async t => {
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true });
+  mockVoiceAPI(t, '呃，检查一下。', '检查一下。');
+  await app.calls.get('voice')();
+  await app.ready();
+  await app.calls.get('voice')();
+  app.ctx.ui.setEditorText(app.editor + '用户的新内容');
+  const changed = app.editor;
+  await app.calls.get('voice-raw')();
+  assert.equal(app.editor, changed);
+  assert.match(app.notices.at(-1).text, /草稿已修改/);
+  await app.events.get('session_start')({}, app.ctx);
+  await app.calls.get('voice-raw')();
+  assert.match(app.notices.at(-1).text, /没有可恢复/);
+});
+
+test('MiMo failure, timeout, bad config, empty text and incomplete responses fall back without recognition failure', async t => {
+  for (const options of [
+    { status: 401 }, { status: 429 }, { hang: true }, { invalidConfig: true },
+    { text: '' }, { text: '   ' }, { text: '尚未完成', finishReason: 'length' },
+    { toolCalls: [{ function: { name: 'shell' } }] },
+  ]) {
+    await t.test(JSON.stringify(options), async t => {
+      const app = await setup(t, false, wav(), { textCleanupEnabled: true,
+        cleanupTimeoutMs: options.invalidConfig ? 0 : 100 });
+      const raw = '不要删除那个文件，最多 5 次。';
+      const { fetch } = mockVoiceAPI(t, raw, options.text ?? raw, options);
+      await app.calls.get('voice')();
+      const path = await app.ready();
+      await app.calls.get('voice')();
+      assert.equal(app.editor, '已有草稿\n不要删除那个文件，最多 5 次。');
+      assert.ok(app.notices.some(n => n.level === 'warning' && n.text.includes('保留原文')));
+      assert.ok(!app.notices.some(n => n.level === 'error'));
+      const reason = options.status ? new RegExp(`HTTP ${options.status}`)
+        : options.hang ? /清洗超时/ : options.invalidConfig ? /清洗配置无效/ : /输出不完整、被拦截或含工具调用/;
+      const warning = app.notices.find(n => n.level === 'warning' && n.text.startsWith('口语清洗未应用：'));
+      assert.ok(warning);
+      assert.match(warning.text, reason);
+      assert.equal((warning.text.match(/保留原文/g) ?? []).length, 1);
+      assert.ok(!app.notices.some(n => /SECRET_AUTH|fake-api-key|PRIVATE_TRANSCRIPT/.test(n.text)));
+      assert.deepEqual(fs.readdirSync(join(path, '..')), []);
+      assert.match(app.status, /语音输入就绪/);
+      assert.equal(fetch.mock.callCount(), options.invalidConfig ? 1 : 2, 'no retry or Codex fallback');
+      assert.equal(fs.existsSync(join(app.home, 'codex-pid')), false);
+      await app.calls.get('voice-status')();
+      assert.match(app.notices.at(-1).text, /已保留原文（[\d.]+ 秒）/);
+      assert.match(app.notices.at(-1).text, reason);
+      assert.ok(!app.notices.at(-1).text.includes('不要删除那个文件'));
+    });
+  }
+});
+
+test('shutdown cancels only its own cleanup without stale UI/editor writes or leftover service', async t => {
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true });
+  const { cleanupCalls } = mockVoiceAPI(t, '呃，帮我查天气。', '帮我查天气。', { hang: true });
+  await app.calls.get('voice')();
+  const path = await app.ready();
+  const pending = app.calls.get('voice')();
+  await waitFor(() => cleanupCalls.length === 1);
+  const notices = app.notices.length;
+  await app.events.get('session_shutdown')({}, app.ctx);
+  await pending;
+  assert.equal(cleanupCalls[0].signal.aborted, true);
+  assert.equal(app.notices.length, notices);
+  assert.equal(app.editor, '已有草稿');
+  assert.equal(fs.existsSync(join(app.home, 'codex-pid')), false);
+  assert.equal(fs.existsSync(join(path, '..')), false);
+});
+
+test('disabled cleanup and self-test never issue text API calls or launch Codex', async t => {
+  const app = await setup(t);
+  const { fetch, cleanupCalls } = mockVoiceAPI(t, '呃，原始文字。');
+  await app.calls.get('voice')();
+  await app.ready();
+  await app.calls.get('voice')();
+  assert.equal(app.editor, '已有草稿\n呃，原始文字。');
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(cleanupCalls.length, 0);
+  const configPath = join(app.home, '.pi/mimo-voice-zh.json');
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  fs.writeFileSync(configPath, JSON.stringify({ ...config, textCleanupEnabled: true }));
+  await app.events.get('session_start')({}, app.ctx);
+  await app.calls.get('voice-test')();
+  await app.ready();
+  await app.calls.get('voice-test')();
+  assert.equal(app.played, true);
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(fs.existsSync(join(app.home, 'codex-pid')), false);
+});
+
+test('enabled cleanup still skips text API after silence, no speech, or ASR failure', async t => {
+  for (const mode of ['silence', 'no-speech', 'asr-failure']) {
+    await t.test(mode, async t => {
+      const app = await setup(t, false, mode === 'silence' ? wav(9600, 0) : wav(),
+        { textCleanupEnabled: true }, mode === 'no-speech' ? { probabilities: Array(19).fill(0) } : {});
+      const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {
+        assert.equal(JSON.parse(opts.body).model, 'mimo-v2.5-asr');
+        return Response.json({ error: { message: 'ASR unavailable' } }, { status: 503 });
+      });
+      await app.calls.get('voice')();
+      const path = await app.ready();
+      await app.calls.get('voice')();
+      assert.equal(fetch.mock.callCount(), mode === 'asr-failure' ? 1 : 0);
+      assert.equal(app.editor, '已有草稿');
+      assert.equal(fs.existsSync(path), false);
+      assert.equal(fs.existsSync(join(app.home, 'codex-pid')), false);
+    });
+  }
+});
+
+test('custom MiMo model/timeout is applied without rewriting existing preferences', async t => {
+  const app = await setup(t, false, wav(), { textCleanupEnabled: true, cleanupModel: 'mimo-v2.6-pro', cleanupTimeoutMs: 3000 });
+  const configPath = join(app.home, '.pi/mimo-voice-zh.json');
+  const original = fs.readFileSync(configPath, 'utf8');
+  const { cleanupCalls } = mockVoiceAPI(t, '检查一下。');
+  await app.calls.get('voice')();
+  await app.calls.get('voice')();
+  assert.equal(cleanupCalls[0].body.model, 'mimo-v2.6-pro');
+  assert.equal(fs.readFileSync(configPath, 'utf8'), original);
+  await app.calls.get('voice-status')();
+  assert.match(app.notices.at(-1).text, /mimo-v2.6-pro；思考已关闭；超时 3 秒/);
 });
 
 test('local diagnostic replay can be stopped by /voice-test without any API call', async t => {

@@ -15,8 +15,9 @@ import { callASR, errorMessage } from "./mimo.ts";
 import { alsaCapture, audioIssues, inspectWav, pulseInput, qualitySummary } from "./diagnostics.ts";
 import { prepareWebrtcInput, type ProcessedInput } from "./webrtc.ts";
 import { prepareSpeech, speechSummary, validateVadThreshold } from "./vad.ts";
+import { cleanupTranscript, DEFAULT_CLEANUP_SETTINGS, type CleanupSettings } from "./cleanup.ts";
 
-interface VoiceSettings {
+interface VoiceSettings extends CleanupSettings {
 	sttEnabled: boolean;
 	apiKey: string;
 	sttShortcut: string;
@@ -25,10 +26,12 @@ interface VoiceSettings {
 	recordingProcessing: "none" | "webrtc";
 	vadEnabled: boolean;
 	vadThreshold: number;
+	textCleanupEnabled: boolean;
 }
 
 const CONFIG_PATH = join(homedir(), ".pi", "mimo-voice-zh.json");
 const DEFAULT_SETTINGS: VoiceSettings = {
+	...DEFAULT_CLEANUP_SETTINGS, textCleanupEnabled: false,
 	apiKey: "", sttEnabled: true, sttShortcut: "f8",
 	recordingBackend: "auto", recordingDevice: "", recordingProcessing: "none",
 	vadEnabled: true, vadThreshold: 0.5,
@@ -91,6 +94,8 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 	let recording: Recording | null = null;
 	let recognizing = false;
 	let starting = false;
+	let cleaning: Promise<string> | undefined;
+	let lastVoiceInput: { raw: string; prefix: string; editorAfter: string } | undefined;
 	let lastDiagnostic = "尚未检测录音";
 	let fileId = 0;
 	const processedInputs = new Set<ProcessedInput>();
@@ -117,6 +122,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 		ctx.ui.setStatus("mimo-voice", starting ? "⏳ 麦克风启动中"
 			: recording?.ready && !recording.stopping ? `🔴 正在录音${recording.test ? "（本地自检）" : ""}`
 			: replaying ? "🔊 麦克风录音回放"
+			: cleaning ? "✍️ 口语清洗中"
 			: recognizing ? "🎤 录音处理中"
 			: settings.sttEnabled ? "🎤 语音输入就绪" : "🎤 ASR 已关闭");
 	}
@@ -230,12 +236,35 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 				} else {
 					lastDiagnostic += "\nVAD: 已关闭，上传原始录音";
 				}
-				const text = await callASR(uploadPath, settings.apiKey, signal);
+				const raw = await callASR(uploadPath, settings.apiKey, signal);
 				if (!active || session !== sessionGen) return;
-				// 不覆盖用户已经输入的草稿，也不会自动发送识别结果。
+				let text = raw;
+				if (settings.textCleanupEnabled) {
+					ctx.ui.notify(`使用 MiMo API (${settings.cleanupModel}，已关闭思考) 整理口语，允许改写，请在发送前复核...`, "info");
+					const cleanupStarted = Date.now();
+					const pending = cleanupTranscript(raw, settings.apiKey, settings, signal);
+					cleaning = pending;
+					updateStatus(ctx);
+					try {
+						text = await pending;
+						if (active && session === sessionGen) lastDiagnostic += `\n文本清洗: ${text === raw ? "无需调整" : "已整理，待人工复核"}（${((Date.now() - cleanupStarted) / 1000).toFixed(2)} 秒）`;
+					} catch (error) {
+						if (!active || session !== sessionGen) return;
+						const reason = errorMessage(error, settings.apiKey);
+						lastDiagnostic += `\n文本清洗: 已保留原文（${((Date.now() - cleanupStarted) / 1000).toFixed(2)} 秒）；原因：${reason}`;
+						ctx.ui.notify(`口语清洗未应用：${reason}`, "warning");
+					} finally {
+						if (cleaning === pending) cleaning = undefined;
+					}
+				}
+				if (!active || session !== sessionGen) return;
+				// 清洗期间输入的新草稿也保留；不自动发送，原文只在会话内存中保存。
 				const draft = ctx.ui.getEditorText();
-				ctx.ui.setEditorText(draft ? `${draft.trimEnd()}\n${text}` : text);
-				ctx.ui.notify(`识别: ${text.slice(0, 40)}`, "info");
+				const prefix = draft ? `${draft.trimEnd()}\n` : "";
+				const editorAfter = prefix + text;
+				ctx.ui.setEditorText(editorAfter);
+				lastVoiceInput = text !== raw ? { raw, prefix, editorAfter } : undefined;
+				ctx.ui.notify(`识别: ${text.slice(0, 40)}${text !== raw ? "（已清洗，/voice-raw 可恢复）" : ""}`, "info");
 			} catch (error) {
 				if (active && session === sessionGen) {
 					ctx.ui.notify(`${test ? "麦克风自检" : "语音识别"}失败: ${errorMessage(error, settings.apiKey)}${summary ? `\n${summary}` : ""}`, "error");
@@ -265,6 +294,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 		try {
 			const backend = recordingCommand("", settings.recordingBackend, settings.recordingDevice);
 			if (!test) {
+				if (typeof settings.textCleanupEnabled !== "boolean") throw new Error("textCleanupEnabled 必须是 true 或 false");
 				if (typeof settings.vadEnabled !== "boolean") throw new Error("vadEnabled 必须是 true 或 false");
 				if (settings.vadEnabled) validateVadThreshold(settings.vadThreshold);
 			}
@@ -345,6 +375,9 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 		active = false;
 		sessionGen++;
 		requests.abort();
+		const pendingCleanup = cleaning;
+		cleaning = undefined;
+		lastVoiceInput = undefined;
 		const player = currentPlayer;
 		stopReplay();
 		const current = recording;
@@ -356,6 +389,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 			clearTimeout(current.timer);
 		}
 		await Promise.all([
+			pendingCleanup?.catch(() => {}),
 			current ? stopAudioProcess(current.process).catch(() => {}) : undefined,
 			player ? stopAudioProcess(player, "SIGTERM").catch(() => {}) : undefined,
 		]);
@@ -390,6 +424,20 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 		description: "本地麦克风自检：录音/停止、检测并回听，回放中可再次停止；不调用 API（最多 10 秒）",
 		handler: async (_args, ctx) => sttHandler(ctx, true),
 	});
+	pi.registerCommand("voice-raw", {
+		description: "恢复最近一次清洗前的原始转写；草稿已改动时不覆盖",
+		handler: async (_args, ctx) => {
+			if (!active || !ctx.hasUI) return;
+			if (!lastVoiceInput) { ctx.ui.notify("没有可恢复的清洗原文", "info"); return; }
+			if (ctx.ui.getEditorText() !== lastVoiceInput.editorAfter) {
+				ctx.ui.notify("草稿已修改或发送，未覆盖；原文仅保留在当前会话内存中", "warning");
+				return;
+			}
+			ctx.ui.setEditorText(lastVoiceInput.prefix + lastVoiceInput.raw);
+			lastVoiceInput = undefined;
+			ctx.ui.notify("已恢复原始转写，未自动发送", "info");
+		},
+	});
 	pi.registerCommand("voice-status", {
 		description: "检查 MiMo 语音配置和本机录音/播放后端（不显示 Key）",
 		handler: async (_args, ctx) => {
@@ -414,6 +462,7 @@ export default function mimoVoiceZh(pi: ExtensionAPI) {
 				`录音: ${backend}；处理: ${settings.recordingProcessing === "webrtc" ? "WebRTC（不改默认设备/硬件增益）" : "原始录音"}`,
 				`输入设备: ${inputDescription}`,
 				`VAD: ${settings.vadEnabled ? `Silero v5 本地检测（阈值 ${settings.vadThreshold}）` : "已关闭"}；自检保留原始录音`,
+				`口语清洗: ${settings.textCleanupEnabled ? `MiMo API / ${settings.cleanupModel}；思考已关闭；超时 ${settings.cleanupTimeoutMs / 1000} 秒；自然整理，允许改写，请复核` : "已关闭"}`,
 				`自检回放: ${describe(() => playbackCommand(""))}`,
 				`最近录音检测: ${lastDiagnostic}`,
 				`语音输入: /voice 或 ${settings.sttShortcut}；本地回听: /voice-test`,

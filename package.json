@@ -1,16 +1,19 @@
 {
   "name": "pi-mimo-voice-zh",
   "version": "0.0.5",
+  "type": "module",
   "description": "小米 MiMo 中文语音输入扩展 — ASR、本地 VAD 和 Ubuntu WebRTC 录音处理",
   "keywords": ["pi-package", "pi-extension", "voice", "asr", "chinese", "mimo", "xiaomi", "webrtc", "vad"],
   "license": "MIT",
+  "engines": { "node": ">=22.19.0" },
   "author": "mlosun",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mlosun/pi-mimo-voice-zh.git"
   },
   "scripts": {
-    "test": "node --test test/*.test.cjs"
+    "test": "node --test test/*.test.cjs",
+    "test:cleanup-live": "node --experimental-strip-types scripts/test-cleanup-live.ts"
   },
   "devDependencies": {
     "jiti": "^2.6.1"
@@ -25,6 +28,9 @@
     "index.ts",
     "audio.ts",
     "diagnostics.ts",
+    "cleanup.ts",
+    "cleanup-prompt.ts",
+    "scripts/test-cleanup-live.ts",
     "vad.ts",
     "webrtc.ts",
     "mimo.ts",
