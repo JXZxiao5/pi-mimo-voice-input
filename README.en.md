@@ -5,7 +5,16 @@
 A Xiaomi MiMo-powered Chinese voice input extension for Pi on Ubuntu/Linux and macOS, with local voice activity detection, microphone diagnostics, and optional transcript cleanup.
 Local Silero VAD is enabled by default; optional PulseAudio WebRTC recording processing is also available. This extension provides voice input only, not text-to-speech for AI replies.
 
-## 1. Installation
+## 1. Why MiMo?
+
+- **Affordable for frequent, everyday use**: voice input typically means many short requests. MiMo's low model-call costs, combined with the small overhead of using Flash for short transcripts, make it a practical everyday input method.
+- **Speech recognition and text models on one platform**: MiMo offers both speech recognition and Flash text models. A single regular API key covers the “record → transcribe → clean up” workflow, without integrating another model provider.
+- **Flash is fast enough for direct transcript cleanup**: the default cleanup model, `mimo-v2.6-flash`, can handle filler words, repetition, punctuation, sentence breaks, and clear self-corrections directly. It is a good fit for cleaning up a transcript immediately after recognition, before inserting it into the editor draft.
+
+Actual costs follow [MiMo's official pricing](https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go); latency varies with network conditions, transcript length, and service load.
+Cleanup is optional and disabled by default. Always review the result before sending.
+
+## 2. Installation
 
 Requires [Pi](https://github.com/earendil-works/pi) and Node.js ≥ 22.19. Install the recording tools for your platform first:
 
@@ -33,7 +42,7 @@ pi install "$PWD"
 
 Do not load both the local and npm versions at the same time. Before switching, run `pi remove <previous-install-source>` to remove the old package entry (the previous package was `npm:pi-mimo-voice-zh`).
 
-## 2. Configuration
+## 3. Configuration
 
 Get a regular API key from the [MiMo console](https://platform.xiaomimimo.com) (Token Plan keys are not supported).
 Create or edit `~/.pi/mimo-voice-zh.json` (the original filename is retained for compatibility) and fill in `apiKey`:
@@ -53,7 +62,7 @@ Create or edit `~/.pi/mimo-voice-zh.json` (the original filename is retained for
 Protect your credentials with `chmod 600 ~/.pi/mimo-voice-zh.json`, then run `/reload` in Pi.
 Never commit your actual configuration to Git.
 
-## 3. Usage
+## 4. Usage
 
 - **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for the “可以说话了” (“You can speak now”) notification before speaking. Some keyboards require `Fn+F8`.
 - **`/voice-test`**: run a local microphone check. Run it again to stop recording and play it back; recording is limited to 10 seconds. Run it during playback to stop playback.
