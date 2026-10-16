@@ -1,3 +1,18 @@
 .DS_Store
 node_modules/
+coverage/
 *.log
+*.tgz
+
+# 本地配置、凭据及证书不得进入版本库。
+.env
+.env.*
+!.env.example
+.npmrc
+.pi/
+mimo-voice-zh.json
+auth.json
+*.pem
+*.key
+*.p12
+*.pfx

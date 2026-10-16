@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createJiti } = require('jiti');
-const cleanup = createJiti(__filename)('../cleanup.ts');
+const cleanup = createJiti(__filename)('../src/cleanup.ts');
 const settings = { ...cleanup.DEFAULT_CLEANUP_SETTINGS };
 const choice = (content, extras = {}) => ({ finish_reason: 'stop', message: { role: 'assistant', content }, ...extras });
 const reply = (text = '检查一下。', extras = {}) => Response.json({ choices: [choice(text)], ...extras });

@@ -6,8 +6,8 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { createJiti } = require('jiti');
-const { wav, executable, waitFor } = require('./helpers.cjs');
-const audio = createJiti(__filename)('../audio.ts');
+const { wav, executable, waitFor } = require('./support/helpers.cjs');
+const audio = createJiti(__filename)('../src/audio.ts');
 const has = (...names) => name => names.includes(name);
 
 test('Linux prefers PulseAudio and emits 16 kHz mono WAV with short latency', () => {

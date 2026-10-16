@@ -15,22 +15,32 @@ async function completion(
 	signal?: AbortSignal,
 ): Promise<any> {
 	if (!apiKey) throw new Error("请先设置 API Key（~/.pi/mimo-voice-zh.json）");
+	const timeout = AbortSignal.timeout(API_TIMEOUT_MS);
+	const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
 	try {
-		const timeout = AbortSignal.timeout(API_TIMEOUT_MS);
-		const response = await fetch(`${BASE_URL}/chat/completions`, {
-			method: "POST",
-			headers: { "api-key": apiKey, "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-			signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-		});
+		requestSignal.throwIfAborted();
+		let response: Response;
+		try {
+			response = await fetch(`${BASE_URL}/chat/completions`, {
+				method: "POST", redirect: "error",
+				headers: { "api-key": apiKey, "Content-Type": "application/json" },
+				body: JSON.stringify(body), signal: requestSignal,
+			});
+		} catch { throw new Error("MiMo ASR 网络请求失败，请检查网络连接"); }
+		requestSignal.throwIfAborted();
 		if (!response.ok) {
-			const detail = await response.json().catch(() => null);
-			throw new Error(`MiMo HTTP ${response.status}${detail?.error?.message
-				? `: ${detail.error.message}` : "，请检查网络、API Key 或额度"}`);
+			// 错误正文和底层网络异常可能含转写、代理地址或凭据，不读取或回显。
+			void response.body?.cancel().catch(() => {});
+			throw new Error(`MiMo HTTP ${response.status}，请检查网络、API Key 或额度`);
 		}
-		return await response.json();
+		let data: unknown;
+		try { data = await response.json(); } catch { throw new Error("MiMo ASR 响应不是有效 JSON"); }
+		requestSignal.throwIfAborted();
+		return data;
 	} catch (error) {
-		throw new Error(errorMessage(error, apiKey));
+		if (signal?.aborted) throw new Error("MiMo 语音识别已取消");
+		if (timeout.aborted) throw new Error("MiMo 语音识别超时（30 秒）");
+		throw error;
 	}
 }
 
