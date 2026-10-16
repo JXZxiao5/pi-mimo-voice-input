@@ -2,8 +2,15 @@
 
 简体中文 | [English](README.en.md)
 
-小米 MiMo 中文语音输入扩展，支持 Ubuntu/Linux 和 macOS，提供本地人声检测、录音自检及可选口语整理。
-默认启用本地 Silero VAD，支持可选 PulseAudio WebRTC 录音处理；仅提供语音输入，不包含 AI 回复语音播放。
+为 [Pi coding agent](https://github.com/earendil-works/pi) 打造的**轻量级中文语音输入扩展**，基于小米 MiMo，支持 Ubuntu/Linux 和 macOS，安装后直接在 Pi 中使用。
+
+**基本开箱即用：安装扩展和本机录音工具后，只需填入一个 MiMo API Key，其他配置保持默认即可。**
+
+- **轻量集成**：无需 Python、GPU 或自建语音识别服务；本地人声检测模型随依赖安装，无需手动下载。
+- **默认就能用**：按 `F8` 开始录音，再按一次完成转写，文字自动追加到 Pi 编辑器，不会自动发送。
+- **功能按需开启**：默认启用本地 Silero VAD，内置录音自检；口语整理和 PulseAudio WebRTC 录音处理均为可选功能。
+
+仅提供语音输入，不包含 AI 回复语音播放。
 
 ## 1. 为什么选择 MiMo？
 
@@ -25,13 +32,13 @@ sudo apt install pulseaudio-utils alsa-utils
 brew install sox
 ```
 
-通过 npm 安装（已发布 [pi-mimo-voice-input@0.1.0](https://www.npmjs.com/package/pi-mimo-voice-input)）：
+推荐直接通过 npm 安装，无需克隆仓库或手动编译（[npm 包](https://www.npmjs.com/package/pi-mimo-voice-input)）：
 
 ```bash
 pi install npm:pi-mimo-voice-input
 ```
 
-本地安装 / 开发：
+本地安装 / 开发（普通使用可跳过）：
 
 ```bash
 git clone https://github.com/JXZxiao5/pi-mimo-voice-input.git
@@ -42,25 +49,25 @@ pi install "$PWD"
 
 不要同时加载本地版本与 npm 版本；切换前用 `pi remove <原安装来源>` 移除旧声明（旧包为 `npm:pi-mimo-voice-zh`）。
 
-## 3. 配置
+## 3. 配置：只需 API Key
 
 从 [MiMo 控制台](https://platform.xiaomimimo.com) 获取普通 API Key（不支持 Token Plan），
-创建或编辑 `~/.pi/mimo-voice-zh.json`（沿用旧文件名以兼容已有配置），将 `apiKey` 填入：
+创建或编辑 `~/.pi/mimo-voice-zh.json`（沿用旧文件名以兼容已有配置）。**只需填写 `apiKey`，无需复制完整配置：**
 
 ```json
 {
-  "apiKey": "",
-  "sttShortcut": "f8",
-  "textCleanupEnabled": false
+  "apiKey": "YOUR_MIMO_API_KEY"
 }
 ```
 
-- `sttShortcut`：录音快捷键，默认 `f8`。
-- `textCleanupEnabled`：启用口语整理，默认关闭；开启后增加一次 MiMo 文本请求，失败或超时保留原文。
-- 其他选项使用默认值，完整配置见 [配置示例](examples/mimo-voice-input.example.json)。
-
-运行 `chmod 600 ~/.pi/mimo-voice-zh.json` 保护凭据，然后在 Pi 中执行 `/reload`。
+运行 `chmod 600 ~/.pi/mimo-voice-zh.json` 保护凭据，然后在 Pi 中执行 `/reload`，按 `F8` 即可开始语音输入。
 不要将真实配置提交到 Git。
+
+以下设置均为可选，不配置也可正常使用：
+
+- `sttShortcut`：录音快捷键，默认 `f8`。
+- `textCleanupEnabled`：启用口语整理，默认关闭；设为 `true` 后增加一次 MiMo 文本请求，失败或超时保留原文。
+- 其他选项使用默认值，完整配置见 [配置示例](examples/mimo-voice-input.example.json)。
 
 ## 4. 使用
 

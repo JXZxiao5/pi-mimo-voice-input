@@ -2,8 +2,15 @@
 
 [简体中文](README.md) | English
 
-A Xiaomi MiMo-powered Chinese voice input extension for Pi on Ubuntu/Linux and macOS, with local voice activity detection, microphone diagnostics, and optional transcript cleanup.
-Local Silero VAD is enabled by default; optional PulseAudio WebRTC recording processing is also available. This extension provides voice input only, not text-to-speech for AI replies.
+A **lightweight Chinese voice input extension for [Pi coding agent](https://github.com/earendil-works/pi)**, powered by Xiaomi MiMo. It runs directly inside Pi on Ubuntu/Linux and macOS.
+
+**Ready to use with minimal setup: install the extension and your platform's recording tools, add one MiMo API key, and leave everything else at its defaults.**
+
+- **Lightweight integration**: no Python, GPU, or self-hosted speech recognition service required. The local voice detection model is included with the dependencies—no manual model downloads.
+- **Useful defaults**: press `F8` to record, then press it again to transcribe. Text is appended to the Pi editor and is never sent automatically.
+- **Optional extras**: local Silero VAD is enabled by default, and microphone diagnostics are built in. Transcript cleanup and PulseAudio WebRTC recording processing are optional.
+
+This extension provides voice input only, not text-to-speech for AI replies.
 
 ## 1. Why MiMo?
 
@@ -25,13 +32,13 @@ sudo apt install pulseaudio-utils alsa-utils
 brew install sox
 ```
 
-Install from npm ([pi-mimo-voice-input@0.1.0](https://www.npmjs.com/package/pi-mimo-voice-input) is available):
+The recommended installation is directly from npm—no repository cloning or manual build required ([npm package](https://www.npmjs.com/package/pi-mimo-voice-input)):
 
 ```bash
 pi install npm:pi-mimo-voice-input
 ```
 
-Local installation / development:
+Local installation / development (skip this for normal use):
 
 ```bash
 git clone https://github.com/JXZxiao5/pi-mimo-voice-input.git
@@ -42,25 +49,25 @@ pi install "$PWD"
 
 Do not load both the local and npm versions at the same time. Before switching, run `pi remove <previous-install-source>` to remove the old package entry (the previous package was `npm:pi-mimo-voice-zh`).
 
-## 3. Configuration
+## 3. Configuration: just an API key
 
 Get a regular API key from the [MiMo console](https://platform.xiaomimimo.com) (Token Plan keys are not supported).
-Create or edit `~/.pi/mimo-voice-zh.json` (the original filename is retained for compatibility) and fill in `apiKey`:
+Create or edit `~/.pi/mimo-voice-zh.json` (the original filename is retained for compatibility). **Only `apiKey` is required—there is no need to copy the full configuration:**
 
 ```json
 {
-  "apiKey": "",
-  "sttShortcut": "f8",
-  "textCleanupEnabled": false
+  "apiKey": "YOUR_MIMO_API_KEY"
 }
 ```
 
-- `sttShortcut`: the recording shortcut; defaults to `f8`.
-- `textCleanupEnabled`: optional transcript cleanup, disabled by default. Enabling it adds one MiMo text-model request; failures or timeouts keep the original transcript.
-- Other settings use their defaults. See the [configuration example](examples/mimo-voice-input.example.json) for all options.
-
-Protect your credentials with `chmod 600 ~/.pi/mimo-voice-zh.json`, then run `/reload` in Pi.
+Protect your credentials with `chmod 600 ~/.pi/mimo-voice-zh.json`, then run `/reload` in Pi. Press `F8` to start using voice input.
 Never commit your actual configuration to Git.
+
+The following settings are optional; the defaults work without adding them:
+
+- `sttShortcut`: the recording shortcut; defaults to `f8`.
+- `textCleanupEnabled`: optional transcript cleanup, disabled by default. Setting it to `true` adds one MiMo text-model request; failures or timeouts keep the original transcript.
+- Other settings use their defaults. See the [configuration example](examples/mimo-voice-input.example.json) for all options.
 
 ## 4. Usage
 
