@@ -1,6 +1,6 @@
 {
   "name": "pi-mimo-voice-input",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Pi MiMo 语音输入扩展 — 中文 ASR、本地 VAD、可选口语整理与录音自检",
   "keywords": [
