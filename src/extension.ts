@@ -16,6 +16,7 @@ import { alsaCapture, audioIssues, inspectWav, pulseInput, qualitySummary } from
 import { prepareWebrtcInput, type ProcessedInput } from "./webrtc.ts";
 import { prepareSpeech, speechSummary, validateVadThreshold } from "./vad.ts";
 import { cleanupTranscript, DEFAULT_CLEANUP_SETTINGS, type CleanupSettings } from "./cleanup.ts";
+import { VoiceStatusBar } from "./status.ts";
 
 interface VoiceSettings extends CleanupSettings {
 	sttEnabled: boolean;
@@ -79,6 +80,7 @@ interface Recording {
 	process: AudioProcess;
 	path: string;
 	ready: boolean;
+	startedAt: number;
 	stopping: boolean;
 	test: boolean;
 	input?: ProcessedInput;
@@ -102,6 +104,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 	let lastDiagnostic = "尚未检测录音";
 	let fileId = 0;
 	const processedInputs = new Set<ProcessedInput>();
+	const statusBar = new VoiceStatusBar();
 
 	async function releaseInput(input?: ProcessedInput, ctx?: ExtensionContext): Promise<void> {
 		if (!input) return;
@@ -122,12 +125,15 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		ctx.ui.setStatus("mimo-voice", starting ? "⏳ 麦克风启动中"
-			: recording?.ready && !recording.stopping ? `🔴 正在录音${recording.test ? "（本地自检）" : ""}`
-			: replaying ? "🔊 麦克风录音回放"
-			: cleaning ? "✍️ 口语清洗中"
-			: recognizing ? "🎤 录音处理中"
-			: settings.sttEnabled ? "🎤 语音输入就绪" : "🎤 ASR 已关闭");
+		if (!active) return;
+		statusBar.update(ctx, starting ? { kind: "starting" }
+			: recording?.ready && !recording.stopping ? {
+				kind: "recording", test: recording.test, startedAt: recording.startedAt, shortcut: settings.sttShortcut,
+			}
+			: replaying ? { kind: "replaying" }
+			: cleaning ? { kind: "cleaning" }
+			: recognizing ? { kind: "recognizing" }
+			: { kind: "idle", enabled: settings.sttEnabled, shortcut: settings.sttShortcut });
 	}
 
 	function stopReplay(): void {
@@ -162,24 +168,17 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		if (!ctx.hasUI || !active) return;
 		if (test && currentPlayer) {
 			stopReplay();
-			ctx.ui.notify("录音回放已停止", "info");
 			updateStatus(ctx);
 			return;
 		}
-		if (starting) {
-			ctx.ui.notify("麦克风正在启动，请等待“可以说话”提示", "warning");
-			return;
-		}
-		if (recognizing || recording?.stopping) {
-			ctx.ui.notify("正在识别，请稍候", "warning");
-			return;
-		}
+		// 重复按键不弹出同一份进度；当前阶段由状态栏持续显示。
+		if (starting || recognizing || recording?.stopping) return;
 		if (recording && recording.test !== test) {
 			ctx.ui.notify(`正在${recording.test ? "本地自检" : "语音输入"}，请用 ${recording.test ? "/voice-test" : "/voice"} 停止`, "warning");
 			return;
 		}
 		if (!test && !settings.sttEnabled) {
-			ctx.ui.notify("ASR 已关闭", "warning");
+			ctx.ui.notify("语音输入已关闭", "warning");
 			return;
 		}
 		if (!test && !settings.apiKey) {
@@ -197,7 +196,6 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			clearTimeout(current.timer);
 			recognizing = true;
 			updateStatus(ctx);
-			ctx.ui.notify(test ? "本地自检，不上传音频..." : "检查录音并识别...", "info");
 			try {
 				await stopAudioProcess(current.process);
 				await releaseInput(current.input, ctx);
@@ -233,8 +231,10 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 					if (!active || session !== sessionGen) return;
 					const vadSummary = speechSummary(speech);
 					lastDiagnostic += `\n${vadSummary}`;
-					ctx.ui.notify(vadSummary, "info");
-					if (!speech.segments.length) return;
+					if (!speech.segments.length) {
+						ctx.ui.notify(vadSummary, "info");
+						return;
+					}
 					uploadPath = speechPath;
 				} else {
 					lastDiagnostic += "\nVAD: 已关闭，上传原始录音";
@@ -243,7 +243,6 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 				if (!active || session !== sessionGen) return;
 				let text = raw;
 				if (settings.textCleanupEnabled) {
-					ctx.ui.notify(`使用 MiMo API (${settings.cleanupModel}，已关闭思考) 整理口语，允许改写，请在发送前复核...`, "info");
 					const cleanupStarted = Date.now();
 					const pending = cleanupTranscript(raw, settings.cleanupModel.startsWith("deepseek-") ? (settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY || "") : settings.apiKey, settings, signal);
 					cleaning = pending;
@@ -267,7 +266,6 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 				const editorAfter = prefix + text;
 				ctx.ui.setEditorText(editorAfter);
 				lastVoiceInput = text !== raw ? { raw, prefix, editorAfter } : undefined;
-				ctx.ui.notify(`识别: ${text.slice(0, 40)}${text !== raw ? "（已清洗，/voice-raw 可恢复）" : ""}`, "info");
 			} catch (error) {
 				if (active && session === sessionGen) {
 					ctx.ui.notify(`${test ? "麦克风自检" : "语音识别"}失败: ${errorMessage(error, settings.apiKey)}${summary ? `\n${summary}` : ""}`, "error");
@@ -293,7 +291,6 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		const signal = requests.signal;
 		starting = true;
 		updateStatus(ctx);
-		ctx.ui.notify("⏳ 麦克风启动中，请等待“可以说话”提示", "info");
 		try {
 			const backend = recordingCommand("", settings.recordingBackend, settings.recordingDevice);
 			if (!test) {
@@ -322,7 +319,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			path = audioPath("stt");
 			const command = recordingCommand(path, settings.recordingBackend, input?.source || settings.recordingDevice);
 			const current: Recording = {
-				process: startAudioProcess(command), path, ready: false, stopping: false, test, input,
+				process: startAudioProcess(command), path, ready: false, startedAt: 0, stopping: false, test, input,
 			};
 			pendingRecording = current;
 			recording = current;
@@ -342,6 +339,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			});
 			await waitForRecordingReady(current.process, path, signal);
 			if (!active || session !== sessionGen || recording !== current) return;
+			current.startedAt = Date.now();
 			current.ready = true;
 			ready = true;
 			starting = false;
@@ -352,7 +350,6 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 				void sttHandler(ctx, test);
 			}, test ? 10_000 : MAX_RECORDING_MS);
 			updateStatus(ctx);
-			ctx.ui.notify(`🔴 ${test ? "本地自检" : "录音中"}，可以说话了；${test ? "再次运行 /voice-test 停止（不会上传）" : `再次按 ${settings.sttShortcut} 或运行 /voice 停止`}`, "info");
 		} catch (error) {
 			if (active && session === sessionGen) {
 				ctx.ui.notify(`录音失败: ${errorMessage(error, settings.apiKey)}`, "error");
@@ -376,6 +373,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 
 	async function cleanupSession(): Promise<void> {
 		active = false;
+		statusBar.stop();
 		sessionGen++;
 		requests.abort();
 		const pendingCleanup = cleaning;

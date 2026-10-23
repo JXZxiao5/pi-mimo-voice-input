@@ -71,12 +71,13 @@ The following settings are optional; the defaults work without adding them:
 
 ## 4. Usage
 
-- **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for the “可以说话了” (“You can speak now”) notification before speaking. Some keyboards require `Fn+F8`.
+- **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for “● 录音” (“Recording”) in the status bar before speaking. Some keyboards require `Fn+F8`.
 - **`/voice-test`**: run a local microphone check. Run it again to stop recording and play it back; recording is limited to 10 seconds. Run it during playback to stop playback.
 - **`/voice-status`**: show the input device, recording diagnostics, and transcript cleanup status.
 - **`/voice-raw`**: restore the original transcript from the latest cleanup. It will not overwrite a draft that has been edited or sent; the original is forgotten on exit or reload.
 - **`/reload`**: reload the extension and its configuration.
 
+Progress appears only in the status bar, with elapsed recording time and the stop shortcut. Normal progress and transcript previews no longer generate duplicate notifications.
 Transcribed text is appended to the editor, preserving your existing draft, and is **never sent automatically**. Optional cleanup may rephrase your words; always review the result before sending.
 Recordings are sent to MiMo. When cleanup is enabled, the transcript is also sent to the selected MiMo or DeepSeek text model. Microphone checks run entirely locally without API calls.
 

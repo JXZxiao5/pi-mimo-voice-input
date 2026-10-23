@@ -9,6 +9,7 @@ pi-mimo-voice-input/
 ├── index.ts                 # 稳定扩展入口，仅转发实现
 ├── src/
 │   ├── extension.ts         # Pi 命令、配置、录音/识别生命周期
+│   ├── status.ts            # 紧凑状态栏、录音计时、进度动画和主题刷新
 │   ├── audio.ts             # 录音/回放后端、进程管理、WAV 校验
 │   ├── diagnostics.ts       # 电平与输入设备诊断
 │   ├── webrtc.ts            # PulseAudio 私有 WebRTC 录音源
@@ -47,6 +48,7 @@ npm pack --dry-run
 测试使用假录音/回放进程和 Mock API，不读取真实 Key，不录音，不产生 API 用量。
 测试覆盖录音就绪/超时、平台后端、WAV/Base64、草稿保留、自检、设备诊断、WebRTC 竞态与资源清理，
 以及 VAD 过滤/裁剪/失败关闭、MiMo 请求/取消/隐私、自然口语整理回退及原文恢复。
+状态栏测试使用虚拟时钟验证录音计时、动画切换、主题刷新、去重和关闭后的定时器清理。
 另有真实 Silero CPU/WASM 离线测试，验证静音和持续测试音不会被当作人声。
 Mock 测试不能证明真实文本模型总能保持原意。
 
