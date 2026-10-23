@@ -71,7 +71,11 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
     ui: {
       theme: { fg: (_color, text) => text },
       notify: (text, level) => notices.push({ text, level }),
-      setStatus: (_key, value) => { status = value; statuses.push(value); },
+      setStatus: (_key, value) => {
+        // Match visible text while retaining all layout spaces for lifecycle assertions.
+        value = require('node:util').stripVTControlCharacters(value).replace(/\u00a0/g, ' ');
+        status = value; statuses.push(value);
+      },
       getEditorText: () => editor,
       setEditorText: value => { editor = value; },
     },
@@ -90,7 +94,8 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   await events.get('session_start')({}, ctx);
   return {
     ctx, notices, statuses, calls, events, home,
-    get status() { return status; },
+    // Lifecycle assertions ignore padding; status.test.cjs checks raw terminal columns.
+    get status() { return status.replace(/ {2,}/g, ' ').trimEnd(); },
     get editor() { return editor; },
     async ready() {
       await waitFor(() => fs.existsSync(join(home, 'recording-path'))
@@ -181,12 +186,12 @@ test('/voice waits for WAV finalization, preserves draft, blocks duplicate ASR, 
     return Response.json({ choices: [{ message: { content: '测试语音输入。' } }] });
   });
   await app.calls.get('voice')();
-  assert.match(app.status, /^● 录音 00:00 · F8 停止$/);
+  assert.match(app.status, /^● 0:00 · F8$/);
   const path = await app.ready();
   assert.ok(basename(join(path, '..')).startsWith('pi-mimo-voice-input-'));
   const stopping = app.calls.get('voice')();
   await app.calls.get('voice')();
-  assert.match(app.status, /识别中$/);
+  assert.match(app.status, /识别/);
   assert.deepEqual(app.notices, []);
   assert.equal(fetch.mock.callCount(), 0);
   await stopping;
@@ -206,21 +211,21 @@ test('voice, F8, and self-test show startup until actual audio arrives and rejec
       const app = await setup(t, false, wav(), {}, {}, { manualAudio: true });
       const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('startup must not upload'); });
       const pending = app.calls.get(command)();
-      assert.match(app.status, /麦克风启动中/);
+      assert.match(app.status, /^ +○ +· /);
       const path = await app.ready();
       assert.equal(fs.statSync(path).size, 44, 'recorder has only written an unfinished WAV header');
       assert.ok(!app.statuses.some(s => s.startsWith('●')));
       assert.deepEqual(app.notices, []);
       await app.calls.get(command)();
-      assert.match(app.status, /麦克风启动中$/);
+      assert.match(app.status, /^ +○ +· /);
       assert.deepEqual(app.notices, [], 'duplicate starts do not repeat progress as notifications');
       fs.appendFileSync(path, Buffer.alloc(31998)); // 999.9375ms is not ready.
       await new Promise(resolve => setTimeout(resolve, 80));
-      assert.match(app.status, /麦克风启动中$/);
+      assert.match(app.status, /^ +○ +· /);
       fs.appendFileSync(path, Buffer.alloc(2)); // Exactly 1000ms, even silence, is ready.
       await pending;
       assert.match(app.status, command === 'voice-test'
-        ? /^● 自检录音 00:00 · \/voice-test 停止$/ : /^● 录音 00:00 · F8 停止$/);
+        ? /^● 0:00 · \/voice-test$/ : /^● 0:00 · F8$/);
       assert.deepEqual(app.notices, []);
       assert.equal(fetch.mock.callCount(), 0);
       await app.events.get('session_shutdown')({}, app.ctx);
@@ -236,7 +241,7 @@ test('startup timeout stops the recorder, unloads WebRTC, deletes audio, and all
   const pending = app.calls.get('voice-test')();
   const path = await app.ready();
   const pid = Number(fs.readFileSync(join(app.home, 'recorder-pid'), 'utf8'));
-  assert.match(app.status, /麦克风启动中/);
+  assert.match(app.status, /^ +○ +· /);
   await pending;
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   assert.equal(fs.existsSync(path), false);
@@ -250,7 +255,7 @@ test('startup timeout stops the recorder, unloads WebRTC, deletes audio, and all
   assert.equal(fetch.mock.callCount(), 0);
   fs.writeFileSync(join(app.home, 'recorder-options.json'), '{}');
   await app.calls.get('voice-test')();
-  assert.match(app.status, /^● 自检录音 00:00/);
+  assert.match(app.status, /^● 0:00 · \/voice-test$/);
 });
 
 test('shutdown during startup cancels readiness without stale UI, cleans resources, and permits a new session', async t => {
@@ -273,7 +278,7 @@ test('shutdown during startup cancels readiness without stale UI, cleans resourc
   fs.writeFileSync(join(app.home, 'recorder-options.json'), '{}');
   await app.events.get('session_start')({}, app.ctx);
   await app.calls.get('voice-test')();
-  assert.match(app.status, /^● 自检录音 00:00/);
+  assert.match(app.status, /^● 0:00 · \/voice-test$/);
   assert.deepEqual(app.notices, []);
 });
 
@@ -289,7 +294,7 @@ test('unexpected recorder exit after readiness still cleans state and reports ex
   assert.equal(app.status, '○ 语音 · F8');
   assert.equal(fetch.mock.callCount(), 0);
   await app.calls.get('voice')();
-  assert.match(app.status, /^● 录音 00:00/);
+  assert.match(app.status, /^● 0:00/);
 });
 
 test('default F8 shortcut toggles voice capture and recognizes into the editor', async t => {
@@ -305,7 +310,7 @@ test('default F8 shortcut toggles voice capture and recognizes into the editor',
   });
   await app.calls.get('f8')();
   await app.ready();
-  assert.equal(app.status, '● 录音 00:00 · F8 停止');
+  assert.equal(app.status, '● 0:00 · F8');
   assert.deepEqual(app.notices, []);
   await app.calls.get('f8')();
   assert.equal(fetch.mock.callCount(), 1);
@@ -324,7 +329,7 @@ test('custom shortcuts override F8 without rewriting existing preferences', asyn
       assert.deepEqual([...app.calls.keys()].sort(), [sttShortcut, 'voice', 'voice-raw', 'voice-status', 'voice-test']);
       await app.calls.get(sttShortcut)();
       const path = await app.ready();
-      assert.equal(app.status, `● 录音 00:00 · ${sttShortcut.replace(/f\d+/g, key => key.toUpperCase())} 停止`);
+      assert.equal(app.status, `● 0:00 · ${sttShortcut.replace(/f\d+/g, key => key.toUpperCase())}`);
       assert.deepEqual(app.notices, []);
       await app.calls.get('voice-status')();
       assert.ok(app.notices.at(-1).text.includes(`语音输入: /voice 或 ${sttShortcut}`));
@@ -397,7 +402,7 @@ test('extension only registers speech-input commands and diagnostics never expos
 
 test('/voice-test runs without key or STT, plays locally, never uploads or overwrites editor', async t => {
   const app = await setup(t, false, wav(), { apiKey: '', sttEnabled: false });
-  assert.equal(app.status, '○ 语音已关闭');
+  assert.equal(app.status, '○ 关闭 · F8');
   const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('must not upload self-test'); });
   await app.calls.get('voice-test')();
   const path = await app.ready();
@@ -408,7 +413,7 @@ test('/voice-test runs without key or STT, plays locally, never uploads or overw
   assert.equal(app.played, true);
   assert.equal(app.editor, '已有草稿');
   assert.equal(fs.existsSync(path), false);
-  assert.equal(app.status, '○ 语音已关闭');
+  assert.equal(app.status, '○ 关闭 · F8');
   assert.ok(app.notices.some(n => n.text.includes('削波 0.0%')));
   await app.calls.get('voice-status')();
   assert.match(app.notices.at(-1).text, /最近录音检测: 录音 0.60s/);
@@ -481,7 +486,7 @@ test('shutdown cleans up an active WebRTC module and a late module initializatio
     const calls = installWebrtcPulse(app, 250);
     const pending = app.calls.get('voice-test')();
     await waitFor(() => calls().some(x => x[0] === 'load-module'));
-    assert.match(app.status, /麦克风启动中/);
+    assert.match(app.status, /^ +○ +· /);
     assert.ok(!app.notices.some(n => n.text.includes('可以说话了')));
     const notices = app.notices.length;
     const statuses = app.statuses.length;
@@ -695,7 +700,7 @@ test('MiMo cleans ASR text, preserves draft, and restores raw input without anot
   assert.equal(fetch.mock.callCount(), 0, 'recording never prewarms or calls a model');
   await app.calls.get('voice')();
   assert.equal(app.editor, '已有草稿\n设置成八次，但不要超过十次。');
-  assert.ok(app.statuses.some(s => s.endsWith(' 整理中')));
+  assert.ok(app.statuses.some(s => s.includes(' 整理')));
   assert.deepEqual(app.notices, [], 'cleanup progress and result previews are status/editor-only');
   assert.equal(cleanupCalls.length, 1);
   assert.equal(cleanupCalls[0].body.model, 'mimo-v2.6-flash');
@@ -750,7 +755,7 @@ test('typing during MiMo cleanup is preserved and duplicate commands do not issu
   await waitFor(() => cleanupCalls.length === 1);
   app.ctx.ui.setEditorText('清洗期间的新草稿');
   await app.calls.get('voice')();
-  assert.match(app.status, /整理中$/);
+  assert.match(app.status, /整理/);
   assert.deepEqual(app.notices, []);
   await pending;
   assert.equal(fetch.mock.callCount(), 2);
@@ -893,8 +898,8 @@ test('local diagnostic replay can be stopped by /voice-test without any API call
   await app.calls.get('voice-test')();
   const path = await app.ready();
   const pending = app.calls.get('voice-test')();
-  await waitFor(() => app.played && app.status.includes('自检回放'));
-  assert.equal(app.status, '▷ 自检回放 · /voice-test 停止');
+  await waitFor(() => app.played && app.status.includes('回放'));
+  assert.equal(app.status, '▷ 回放 · /voice-test');
   const notices = app.notices.length;
   await app.calls.get('voice-test')();
   await pending;
