@@ -7,6 +7,10 @@ const { createJiti } = require('jiti');
 const { wav, executable, waitFor } = require('./support/helpers.cjs');
 
 async function setup(t, recorderFails = false, sample = wav(), config = {}, vadOptions = {}, recorderOptions = {}) {
+  // Fake recorder includes the same 1000ms startup segment as a real stream.
+  sample = Buffer.concat([sample.subarray(0, 44), Buffer.alloc(32000), sample.subarray(44)]);
+  sample.writeUInt32LE(sample.length - 8, 4);
+  sample.writeUInt32LE(sample.length - 44, 40);
   const home = fs.mkdtempSync(join(tmpdir(), 'mimo-extension-test-'));
   const bin = join(home, 'bin');
   fs.mkdirSync(bin);
@@ -174,7 +178,10 @@ test('voice, F8, and self-test show startup until actual audio arrives and rejec
       await app.calls.get(command)();
       assert.match(app.status, /麦克风启动中$/);
       assert.deepEqual(app.notices, [], 'duplicate starts do not repeat progress as notifications');
-      fs.appendFileSync(path, Buffer.alloc(2)); // A silent PCM frame is sufficient.
+      fs.appendFileSync(path, Buffer.alloc(31998)); // 999.9375ms is not ready.
+      await new Promise(resolve => setTimeout(resolve, 80));
+      assert.match(app.status, /麦克风启动中$/);
+      fs.appendFileSync(path, Buffer.alloc(2)); // Exactly 1000ms, even silence, is ready.
       await pending;
       assert.match(app.status, command === 'voice-test'
         ? /^● 自检录音 00:00 · \/voice-test 停止$/ : /^● 录音 00:00 · F8 停止$/);

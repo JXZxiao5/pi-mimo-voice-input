@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	MAX_RECORDING_MS, playbackCommand, recordingCommand,
-	startAudioProcess, stopAudioProcess, waitForRecordingReady,
+	startAudioProcess, stopAudioProcess, waitForRecordingReady, trimRecordingWarmup, RECORDING_WARMUP_MS,
 	type AudioProcess, type RecordingBackend,
 } from "./audio.ts";
 import { callASR, errorMessage } from "./mimo.ts";
@@ -201,6 +201,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 				await releaseInput(current.input, ctx);
 				if (!active || session !== sessionGen) return;
 				recording = null;
+				trimRecordingWarmup(current.path);
 				const quality = inspectWav(current.path);
 				summary = qualitySummary(quality);
 				const issues = audioIssues(quality);
@@ -337,7 +338,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 					settings.apiKey,
 				)}`, "error");
 			});
-			await waitForRecordingReady(current.process, path, signal);
+			await waitForRecordingReady(current.process, path, signal, undefined, RECORDING_WARMUP_MS);
 			if (!active || session !== sessionGen || recording !== current) return;
 			current.startedAt = Date.now();
 			current.ready = true;
