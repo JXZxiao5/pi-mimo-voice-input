@@ -65,7 +65,7 @@ Cleanup adds one MiMo text-model request; failures or timeouts keep the original
 
 ## 4. Usage
 
-- **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for “● 录音” (“Recording”) in the status bar before speaking. Some keyboards require `Fn+F8`.
+- **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for the recording timer (e.g. “● 0:00 · F8”) in the status bar before speaking. Some keyboards require `Fn+F8`.
 - **`/voice-test`**: run a local microphone check. Run it again to stop recording and play it back; recording is limited to 10 seconds. Run it during playback to stop playback.
 - **`/voice-status`**: show the input device, recording diagnostics, and transcript cleanup status.
 - **`/voice-raw`**: restore the original transcript from the latest cleanup. It will not overwrite a draft that has been edited or sent; the original is forgotten on exit or reload.

@@ -112,7 +112,7 @@ export function startAudioProcess(command: AudioCommand): AudioProcess {
 }
 
 /** 录音中的 WAV 长度字段可能尚未补全，只检查 data 块实际写入的完整 PCM 帧。 */
-function hasRecordedAudio(path: string, warmupMs: number): boolean {
+function hasRecordedAudio(path: string, warmupMs: number, onProgress?: (progress: number) => void): boolean {
 	let fd: number;
 	try {
 		fd = openSync(path, "r");
@@ -132,7 +132,12 @@ function hasRecordedAudio(path: string, warmupMs: number): boolean {
 			if (readSync(fd, header, 0, 8, offset) !== 8) return false;
 			const id = header.toString("ascii", 0, 4);
 			const chunkSize = header.readUInt32LE(4);
-			if (id === "data") return frameBytes > 0 && size - offset - 8 >= requiredBytes;
+			if (id === "data") {
+				if (!frameBytes) return false;
+				const bytes = Math.floor((size - offset - 8) / frameBytes) * frameBytes;
+				if (bytes > 0) onProgress?.(Math.min(1, bytes / requiredBytes));
+				return bytes >= requiredBytes;
+			}
 			if (offset + 8 + chunkSize > size) return false;
 			if (id === "fmt ") {
 				if (chunkSize < 16 || readSync(fd, header, 0, 16, offset + 8) !== 16) return false;
@@ -157,6 +162,7 @@ export function waitForRecordingReady(
 	signal?: AbortSignal,
 	timeoutMs = RECORDING_START_TIMEOUT_MS,
 	warmupMs = 0,
+	onProgress?: (progress: number) => void,
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
@@ -179,7 +185,7 @@ export function waitForRecordingReady(
 		const poll = () => {
 			if (settled || state.exited) return;
 			try {
-				if (hasRecordedAudio(wavPath, warmupMs)) { finish(); return; }
+				if (hasRecordedAudio(wavPath, warmupMs, onProgress)) { finish(); return; }
 			} catch (error) {
 				finish(error as Error);
 				return;

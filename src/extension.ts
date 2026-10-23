@@ -100,6 +100,8 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 	let recording: Recording | null = null;
 	let recognizing = false;
 	let starting = false;
+	let warmupProgress: number | undefined;
+	let startingTest = false;
 	let cleaning: Promise<string> | undefined;
 	let lastVoiceInput: { raw: string; prefix: string; editorAfter: string } | undefined;
 	let lastDiagnostic = "尚未检测录音";
@@ -127,7 +129,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		if (!active) return;
-		statusBar.update(ctx, starting ? { kind: "starting" }
+		statusBar.update(ctx, starting ? { kind: "starting", progress: warmupProgress, test: recording?.test ?? startingTest, shortcut: settings.sttShortcut }
 			: recording?.ready && !recording.stopping ? {
 				kind: "recording", test: recording.test, startedAt: recording.startedAt, shortcut: settings.sttShortcut,
 			}
@@ -292,6 +294,8 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		const session = sessionGen;
 		const signal = requests.signal;
 		starting = true;
+		startingTest = test;
+		warmupProgress = undefined;
 		updateStatus(ctx);
 		try {
 			const backend = recordingCommand("", settings.recordingBackend, settings.recordingDevice);
@@ -339,7 +343,11 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 					settings.apiKey,
 				)}`, "error");
 			});
-			await waitForRecordingReady(current.process, path, signal, undefined, RECORDING_WARMUP_MS);
+			await waitForRecordingReady(current.process, path, signal, undefined, RECORDING_WARMUP_MS, (progress) => {
+				if (!active || session !== sessionGen || recording !== current || warmupProgress === progress) return;
+				warmupProgress = progress;
+				updateStatus(ctx);
+			});
 			if (!active || session !== sessionGen || recording !== current) return;
 			current.startedAt = Date.now();
 			current.ready = true;
