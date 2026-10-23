@@ -102,6 +102,42 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   };
 }
 
+test('new user configuration and diagnostics only expose MiMo', async t => {
+  const app = await setup(t);
+  await app.events.get('session_shutdown')({}, app.ctx);
+  const configPath = join(app.home, '.pi/mimo-voice-zh.json');
+  fs.unlinkSync(configPath);
+  await app.events.get('session_start')({}, app.ctx);
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.equal(config.cleanupModel, 'mimo-v2.6-flash');
+  assert.equal(Object.hasOwn(config, 'deepseekApiKey'), false);
+  await app.calls.get('voice-status')();
+  assert.ok(!/deepseek/i.test(app.notices.at(-1).text));
+});
+
+test('explicit private cleanup configuration remains usable without changing MiMo ASR', async t => {
+  const app = await setup(t, false, wav(), {
+    textCleanupEnabled: true, cleanupModel: 'deepseek-flash', deepseekApiKey: 'private-test-key',
+  });
+  const models = [];
+  t.mock.method(global, 'fetch', async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    models.push(body.model);
+    if (body.model === 'mimo-v2.5-asr') {
+      assert.equal(opts.headers['api-key'], 'fake-api-key');
+      return Response.json({ choices: [{ message: { content: '嗯检查日志' } }] });
+    }
+    assert.equal(url, 'https://api.deepseek.com/chat/completions');
+    assert.equal(opts.headers.Authorization, 'Bearer private-test-key');
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '检查日志。' } }] });
+  });
+  await app.calls.get('voice')();
+  await app.ready();
+  await app.calls.get('voice')();
+  assert.deepEqual(models, ['mimo-v2.5-asr', 'deepseek-flash']);
+  assert.equal(app.editor, '已有草稿\n检查日志。');
+});
+
 function mockVoiceAPI(t, raw, cleaned = raw, options = {}) {
   const cleanupCalls = [];
   const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {

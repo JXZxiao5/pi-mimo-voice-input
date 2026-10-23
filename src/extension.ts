@@ -21,7 +21,8 @@ import { VoiceStatusBar } from "./status.ts";
 interface VoiceSettings extends CleanupSettings {
 	sttEnabled: boolean;
 	apiKey: string;
-	deepseekApiKey: string;
+	// 私用兼容字段，不写入默认配置或公开示例。
+	deepseekApiKey?: string;
 	sttShortcut: string;
 	recordingBackend: RecordingBackend;
 	recordingDevice: string;
@@ -36,7 +37,7 @@ const CONFIG_PATH = join(homedir(), ".pi", "mimo-voice-zh.json");
 const TMP_PREFIX = "pi-mimo-voice-input-";
 const DEFAULT_SETTINGS: VoiceSettings = {
 	...DEFAULT_CLEANUP_SETTINGS, textCleanupEnabled: false,
-	apiKey: "", deepseekApiKey: "", sttEnabled: true, sttShortcut: "f8",
+	apiKey: "", sttEnabled: true, sttShortcut: "f8",
 	recordingBackend: "auto", recordingDevice: "", recordingProcessing: "none",
 	vadEnabled: true, vadThreshold: 0.5,
 };
