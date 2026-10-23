@@ -1,4 +1,4 @@
-/** 直接调用 MiMo 文本 API，不启动 CLI、共享服务或工具。 */
+/** 直接调用 MiMo / DeepSeek 文本 API，不启动 CLI、共享服务或工具。 */
 import { BASE_URL } from "./mimo.ts";
 import { CLEANUP_PROMPT } from "./cleanup-prompt.ts";
 
@@ -23,16 +23,16 @@ export interface CleanupResult {
 }
 
 export function validateCleanupSettings(settings: CleanupSettings): void {
-	if (!settings || !["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"].includes(settings.cleanupModel)
+	if (!settings || !["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "deepseek-flash", "deepseek-v4-pro"].includes(settings.cleanupModel)
 		|| !Number.isInteger(settings.cleanupTimeoutMs) || settings.cleanupTimeoutMs < 100 || settings.cleanupTimeoutMs > 30_000) {
-		throw new Error("MiMo 清洗配置无效，请检查 cleanupModel / cleanupTimeoutMs；保留原文");
+		throw new Error("文本清洗配置无效，请检查 cleanupModel / cleanupTimeoutMs；保留原文");
 	}
 }
 
 function readUsage(value: any): CleanupUsage | undefined {
 	if (!value || !Number.isSafeInteger(value.prompt_tokens) || value.prompt_tokens < 0
 		|| !Number.isSafeInteger(value.completion_tokens) || value.completion_tokens < 0) return undefined;
-	const cached = value.prompt_tokens_details?.cached_tokens ?? 0;
+	const cached = value.prompt_cache_hit_tokens ?? value.prompt_tokens_details?.cached_tokens ?? 0;
 	const reasoning = value.completion_tokens_details?.reasoning_tokens ?? 0;
 	if (!Number.isSafeInteger(cached) || cached < 0 || cached > value.prompt_tokens
 		|| !Number.isSafeInteger(reasoning) || reasoning < 0 || reasoning > value.completion_tokens) return undefined;
@@ -45,10 +45,11 @@ export async function cleanupTranscriptWithMetrics(
 ): Promise<CleanupResult> {
 	signal?.throwIfAborted();
 	validateCleanupSettings(settings);
+	const deepseek = settings.cleanupModel.startsWith("deepseek-");
 	if (typeof raw !== "string" || !raw.trim() || raw.length > 16000) {
 		throw new Error("转写长度不适合自动清洗，保留原文");
 	}
-	if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("请先设置 MiMo API Key，保留原文");
+	if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error(`请先设置 ${deepseek ? "DEEPSEEK_API_KEY" : "MiMo API Key"}，保留原文`);
 	const started = performance.now();
 	const deadline = new AbortController();
 	const timer = setTimeout(() => deadline.abort(), settings.cleanupTimeoutMs);
@@ -57,9 +58,9 @@ export async function cleanupTranscriptWithMetrics(
 		let response: Response;
 		let data: any;
 		try {
-			response = await fetch(`${BASE_URL}/chat/completions`, {
+			response = await fetch(`${deepseek ? "https://api.deepseek.com" : BASE_URL}/chat/completions`, {
 				method: "POST", redirect: "error",
-				headers: { "api-key": apiKey, "Content-Type": "application/json" },
+				headers: { ...(deepseek ? { Authorization: `Bearer ${apiKey}` } : { "api-key": apiKey }), "Content-Type": "application/json" },
 				body: JSON.stringify({
 					model: settings.cleanupModel,
 					messages: [
@@ -69,7 +70,7 @@ export async function cleanupTranscriptWithMetrics(
 					thinking: { type: "disabled" }, response_format: { type: "text" },
 					temperature: 0, stream: false,
 					// 返回全文而非编辑列表，按原文长度预留输出空间，避免长转写被截断。
-					max_completion_tokens: Math.min(16_384, Math.max(1024, raw.length * 2)),
+					[deepseek ? "max_tokens" : "max_completion_tokens"]: Math.min(16_384, Math.max(1024, raw.length * 2)),
 				}),
 				signal: requestSignal,
 			});
@@ -97,8 +98,9 @@ export async function cleanupTranscriptWithMetrics(
 		requestSignal.throwIfAborted();
 		return { text, elapsedMs: performance.now() - started, usage: readUsage(data.usage) };
 	} catch (error) {
-		if (signal?.aborted) throw new Error("MiMo 口语清洗已取消，保留原文");
-		if (deadline.signal.aborted) throw new Error(`MiMo 口语清洗超时（${settings.cleanupTimeoutMs}ms），保留原文`);
+		if (signal?.aborted) throw new Error(`${deepseek ? "DeepSeek" : "MiMo"} 口语清洗已取消，保留原文`);
+		if (deadline.signal.aborted) throw new Error(`${deepseek ? "DeepSeek" : "MiMo"} 口语清洗超时（${settings.cleanupTimeoutMs}ms），保留原文`);
+		if (deepseek && error instanceof Error) throw new Error(error.message.replaceAll("MiMo", "DeepSeek"));
 		throw error;
 	} finally {
 		clearTimeout(timer);

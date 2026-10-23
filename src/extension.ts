@@ -20,6 +20,7 @@ import { cleanupTranscript, DEFAULT_CLEANUP_SETTINGS, type CleanupSettings } fro
 interface VoiceSettings extends CleanupSettings {
 	sttEnabled: boolean;
 	apiKey: string;
+	deepseekApiKey: string;
 	sttShortcut: string;
 	recordingBackend: RecordingBackend;
 	recordingDevice: string;
@@ -34,7 +35,7 @@ const CONFIG_PATH = join(homedir(), ".pi", "mimo-voice-zh.json");
 const TMP_PREFIX = "pi-mimo-voice-input-";
 const DEFAULT_SETTINGS: VoiceSettings = {
 	...DEFAULT_CLEANUP_SETTINGS, textCleanupEnabled: false,
-	apiKey: "", sttEnabled: true, sttShortcut: "f8",
+	apiKey: "", deepseekApiKey: "", sttEnabled: true, sttShortcut: "f8",
 	recordingBackend: "auto", recordingDevice: "", recordingProcessing: "none",
 	vadEnabled: true, vadThreshold: 0.5,
 };
@@ -244,7 +245,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 				if (settings.textCleanupEnabled) {
 					ctx.ui.notify(`使用 MiMo API (${settings.cleanupModel}，已关闭思考) 整理口语，允许改写，请在发送前复核...`, "info");
 					const cleanupStarted = Date.now();
-					const pending = cleanupTranscript(raw, settings.apiKey, settings, signal);
+					const pending = cleanupTranscript(raw, settings.cleanupModel.startsWith("deepseek-") ? (settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY || "") : settings.apiKey, settings, signal);
 					cleaning = pending;
 					updateStatus(ctx);
 					try {
@@ -464,7 +465,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 				`录音: ${backend}；处理: ${settings.recordingProcessing === "webrtc" ? "WebRTC（不改默认设备/硬件增益）" : "原始录音"}`,
 				`输入设备: ${inputDescription}`,
 				`VAD: ${settings.vadEnabled ? `Silero v5 本地检测（阈值 ${settings.vadThreshold}）` : "已关闭"}；自检保留原始录音`,
-				`口语清洗: ${settings.textCleanupEnabled ? `MiMo API / ${settings.cleanupModel}；思考已关闭；超时 ${settings.cleanupTimeoutMs / 1000} 秒；自然整理，允许改写，请复核` : "已关闭"}`,
+				`口语清洗: ${settings.textCleanupEnabled ? `${settings.cleanupModel.startsWith("deepseek-") ? "DeepSeek" : "MiMo"} API / ${settings.cleanupModel}；思考已关闭；超时 ${settings.cleanupTimeoutMs / 1000} 秒；自然整理，允许改写，请复核` : "已关闭"}`,
 				`自检回放: ${describe(() => playbackCommand(""))}`,
 				`最近录音检测: ${lastDiagnostic}`,
 				`语音输入: /voice 或 ${settings.sttShortcut}；本地回听: /voice-test`,

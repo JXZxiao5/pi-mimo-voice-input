@@ -1,5 +1,6 @@
 {
   "apiKey": "",
+  "deepseekApiKey": "",
   "sttEnabled": true,
   "sttShortcut": "f8",
   "recordingBackend": "auto",

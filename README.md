@@ -66,8 +66,8 @@ pi install "$PWD"
 以下设置均为可选，不配置也可正常使用：
 
 - `sttShortcut`：录音快捷键，默认 `f8`。
-- `textCleanupEnabled`：启用口语整理，默认关闭；设为 `true` 后增加一次 MiMo 文本请求，失败或超时保留原文。
-- 其他选项使用默认值，完整配置见 [配置示例](examples/mimo-voice-input.example.json)。
+- `textCleanupEnabled`：启用口语整理，默认关闭；设为 `true` 后增加一次文本请求（默认 MiMo，也可选 DeepSeek），失败或超时保留原文。
+- 其他选项使用默认值，完整配置见 [配置示例](examples/mimo-voice-input.example.json)，字段含义、候选值及升级方式见 [配置速查](docs/configuration.md)。
 
 ## 4. 使用
 
@@ -78,6 +78,6 @@ pi install "$PWD"
 - **`/reload`**：重新加载代码和配置。
 
 识别结果追加到编辑器，保留已有草稿，**不会自动发送**。启用口语整理后允许改写，发送前请人工复核。
-录音发送给 MiMo；启用整理时还会发送转写文本。自检完全本地，不调用 API。
+录音发送给 MiMo；启用整理时还会向所选服务（MiMo / DeepSeek）发送转写文本。自检完全本地，不调用 API。
 
 更多说明：[录音与排查](docs/audio.md) · [口语整理](docs/text-cleanup.md) · [开发与发布](docs/development.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)

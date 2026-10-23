@@ -78,6 +78,6 @@ The following settings are optional; the defaults work without adding them:
 - **`/reload`**: reload the extension and its configuration.
 
 Transcribed text is appended to the editor, preserving your existing draft, and is **never sent automatically**. Optional cleanup may rephrase your words; always review the result before sending.
-Recordings are sent to MiMo. When cleanup is enabled, the transcript is also sent to a MiMo text model. Microphone checks run entirely locally without API calls.
+Recordings are sent to MiMo. When cleanup is enabled, the transcript is also sent to the selected MiMo or DeepSeek text model. Microphone checks run entirely locally without API calls.
 
 More information (in Chinese): [Recording & troubleshooting](docs/audio.md) · [Transcript cleanup](docs/text-cleanup.md) · [Development & publishing](docs/development.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
