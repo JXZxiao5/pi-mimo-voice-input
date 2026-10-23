@@ -51,7 +51,9 @@ async function main(): Promise<void> {
 		cleanupTimeoutMs: Number(options.get("--timeout-ms") ?? DEFAULT_CLEANUP_SETTINGS.cleanupTimeoutMs),
 	};
 	validateCleanupSettings(settings);
-	let apiKey = process.env.MIMO_API_KEY;
+	const deepseek = settings.cleanupModel.startsWith("deepseek-");
+	let apiKey = deepseek ? process.env.DEEPSEEK_API_KEY : process.env.MIMO_API_KEY;
+	if (deepseek && !apiKey) throw new Error("请设置 DEEPSEEK_API_KEY");
 	if (!apiKey) {
 		try { apiKey = JSON.parse(readFileSync(join(homedir(), ".pi", "mimo-voice-zh.json"), "utf8")).apiKey; }
 		catch { throw new Error("没有可用 Key：请设置 MIMO_API_KEY 或 ~/.pi/mimo-voice-zh.json"); }
@@ -61,7 +63,8 @@ async function main(): Promise<void> {
 	const rates: Record<string, number[]> = {
 		"mimo-v2.6-flash": [1, 0.02, 2], "mimo-v2.6-pro": [3, 0.025, 6], "mimo-v2.6-pro-ultraspeed": [30, 0.25, 60],
 	};
-	const [inputRate, cacheRate, outputRate] = rates[settings.cleanupModel];
+	const pricing = rates[settings.cleanupModel];
+	const [inputRate, cacheRate, outputRate] = pricing ?? [0, 0, 0];
 	const rows: { sample: string; passed: boolean; elapsedMs: number; text?: string; error?: string; usage?: unknown; estimatedYuan?: number }[] = [];
 	let estimatedYuan = 0;
 	console.log(`将发送 ${selected.length} 条合成文本；不读取录音/会话历史；模型 ${settings.cleanupModel}；思考关闭；单次超时 ${settings.cleanupTimeoutMs}ms。`);
@@ -70,7 +73,7 @@ async function main(): Promise<void> {
 		try {
 			const result = await cleanupTranscriptWithMetrics(sample.raw, apiKey, settings);
 			const usage = result.usage;
-			const cost = usage ? ((usage.inputTokens - usage.cachedTokens) * inputRate
+			const cost = usage && pricing ? ((usage.inputTokens - usage.cachedTokens) * inputRate
 				+ usage.cachedTokens * cacheRate + usage.outputTokens * outputRate) / 1e6 : undefined;
 			estimatedYuan += cost ?? 0;
 			const passed = (sample.exact === undefined || result.text === sample.exact)
@@ -93,7 +96,7 @@ async function main(): Promise<void> {
 		planned: selected.length, completed: rows.length, passed: rows.filter(row => row.passed).length,
 		medianMs: percentile(0.5), sampleP95Ms: percentile(0.95), maxMs: times.at(-1),
 		estimatedYuanForResponsesWithUsage: Number(estimatedYuan.toFixed(8)),
-		costMayBeIncomplete: rows.some(row => !row.usage),
+		costMayBeIncomplete: !pricing || rows.some(row => !row.usage),
 		note: "自动断言仅检查样本关键内容，非语义等价证明；请复核输出全文。小样本非延迟 SLA；超时可能仍计费，以账单为准。",
 	};
 	console.log(JSON.stringify(report, null, 2));
@@ -101,6 +104,6 @@ async function main(): Promise<void> {
 }
 
 main().catch(() => {
-	console.error("在线清洗测试未完成，请检查参数、MiMo Key 和网络；不输出原始异常或凭据。");
+	console.error("在线清洗测试未完成，请检查参数、对应服务的 API Key 和网络；不输出原始异常或凭据。");
 	process.exitCode = 1;
 });

@@ -56,6 +56,24 @@ test('WAV validation rejects empty, unfinished, invalid, and oversized recording
   assert.throws(() => audio.wavBase64(path), /10 MB/);
 });
 
+test('warmup trimming removes exactly 1000ms and keeps subsequent PCM unchanged', t => {
+  const dir = fs.mkdtempSync(join(tmpdir(), 'mimo-warmup-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'sample.wav');
+  const speech = wav();
+  const input = Buffer.concat([speech.subarray(0, 44), Buffer.alloc(32000, 0x7f), speech.subarray(44)]);
+  input.writeUInt32LE(input.length - 8, 4);
+  input.writeUInt32LE(input.length - 44, 40);
+  fs.writeFileSync(path, input);
+  audio.trimRecordingWarmup(path);
+  assert.deepEqual(fs.readFileSync(path), speech);
+  const onlyWarmup = input.subarray(0, 32044);
+  onlyWarmup.writeUInt32LE(onlyWarmup.length - 8, 4);
+  onlyWarmup.writeUInt32LE(32000, 40);
+  fs.writeFileSync(path, onlyWarmup);
+  assert.throws(() => audio.trimRecordingWarmup(path), /预热后录音为空/);
+});
+
 function idleRecorder(t) {
   const state = audio.startAudioProcess({
     command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'],

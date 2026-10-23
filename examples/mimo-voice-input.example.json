@@ -1,13 +1,6 @@
 {
   "apiKey": "",
-  "sttEnabled": true,
   "sttShortcut": "f8",
-  "recordingBackend": "auto",
-  "recordingDevice": "",
-  "recordingProcessing": "none",
-  "vadEnabled": true,
-  "vadThreshold": 0.5,
-  "textCleanupEnabled": false,
-  "cleanupModel": "mimo-v2.6-flash",
-  "cleanupTimeoutMs": 5000
+  "textCleanupEnabled": true,
+  "cleanupModel": "mimo-v2.6-flash"
 }

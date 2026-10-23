@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 export type RecordingBackend = "auto" | "parecord" | "arecord" | "sox";
@@ -22,6 +22,7 @@ export interface AudioProcess {
 export const MAX_BASE64_BYTES = 10_000_000;
 export const MAX_RECORDING_MS = 180_000;
 export const RECORDING_START_TIMEOUT_MS = 5000;
+export const RECORDING_WARMUP_MS = 1000;
 
 export function commandExists(command: string): boolean {
 	return (process.env.PATH ?? "").split(delimiter).some((dir) => {
@@ -111,7 +112,7 @@ export function startAudioProcess(command: AudioCommand): AudioProcess {
 }
 
 /** 录音中的 WAV 长度字段可能尚未补全，只检查 data 块实际写入的完整 PCM 帧。 */
-function hasRecordedAudio(path: string): boolean {
+function hasRecordedAudio(path: string, warmupMs: number): boolean {
 	let fd: number;
 	try {
 		fd = openSync(path, "r");
@@ -126,11 +127,12 @@ function hasRecordedAudio(path: string): boolean {
 			|| header.toString("ascii", 0, 4) !== "RIFF"
 			|| header.toString("ascii", 8, 12) !== "WAVE") return false;
 		let frameBytes = 0;
+		let requiredBytes = 0;
 		for (let offset = 12; offset + 8 <= size;) {
 			if (readSync(fd, header, 0, 8, offset) !== 8) return false;
 			const id = header.toString("ascii", 0, 4);
 			const chunkSize = header.readUInt32LE(4);
-			if (id === "data") return frameBytes > 0 && size - offset - 8 >= frameBytes;
+			if (id === "data") return frameBytes > 0 && size - offset - 8 >= requiredBytes;
 			if (offset + 8 + chunkSize > size) return false;
 			if (id === "fmt ") {
 				if (chunkSize < 16 || readSync(fd, header, 0, 16, offset + 8) !== 16) return false;
@@ -138,6 +140,7 @@ function hasRecordedAudio(path: string): boolean {
 				if (header.readUInt16LE(0) !== 1 || header.readUInt16LE(14) !== 16
 					|| !channels || header.readUInt16LE(12) !== channels * 2) return false;
 				frameBytes = channels * 2;
+				requiredBytes = Math.max(1, Math.ceil(header.readUInt32LE(4) * warmupMs / 1000)) * frameBytes;
 			}
 			offset += 8 + chunkSize + (chunkSize % 2);
 		}
@@ -147,12 +150,13 @@ function hasRecordedAudio(path: string): boolean {
 	}
 }
 
-/** 收到音频数据（包括静音）才算就绪；不等待人声，也不要求 WAV 头已补全。 */
+/** 累计收到指定时长的音频（包括静音）才就绪；默认只要求一帧，不等待人声。 */
 export function waitForRecordingReady(
 	state: AudioProcess,
 	wavPath: string,
 	signal?: AbortSignal,
 	timeoutMs = RECORDING_START_TIMEOUT_MS,
+	warmupMs = 0,
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
@@ -175,14 +179,14 @@ export function waitForRecordingReady(
 		const poll = () => {
 			if (settled || state.exited) return;
 			try {
-				if (hasRecordedAudio(wavPath)) { finish(); return; }
+				if (hasRecordedAudio(wavPath, warmupMs)) { finish(); return; }
 			} catch (error) {
 				finish(error as Error);
 				return;
 			}
 			pollTimer = setTimeout(poll, 25);
 		};
-		timeout = setTimeout(() => finish(new Error("麦克风启动超时，未收到音频数据；请检查输入设备和音频服务后重试")), timeoutMs);
+		timeout = setTimeout(() => finish(new Error("麦克风启动超时，未收到音频数据或预热数据不足；请检查输入设备和音频服务后重试")), timeoutMs);
 		poll();
 	});
 }
@@ -237,6 +241,23 @@ export function readWav(wavPath: string): { wav: Buffer; pcm: Buffer; format: Bu
 	if (!pcm) throw new Error("录音为空或 WAV 缺少音频数据，请检查麦克风");
 	if (!format || format.length < 16) throw new Error("WAV 缺少有效格式信息，请重试");
 	return { wav, pcm, format };
+}
+
+/** 进程关闭、WAV 完整后去掉预热段；不重启采集，保留其他 WAV 块。 */
+export function trimRecordingWarmup(wavPath: string, warmupMs = RECORDING_WARMUP_MS): void {
+	const { wav, pcm, format } = readWav(wavPath);
+	const frameBytes = format.readUInt16LE(12);
+	if (format.readUInt16LE(0) !== 1 || format.readUInt16LE(14) !== 16
+		|| frameBytes !== format.readUInt16LE(2) * 2 || !frameBytes) {
+		throw new Error("预热裁剪需要 16-bit PCM WAV");
+	}
+	const bytes = Math.floor(format.readUInt32LE(4) * warmupMs / 1000) * frameBytes;
+	if (pcm.length <= bytes) throw new Error("预热后录音为空，请等录音提示后说话再停止");
+	const start = pcm.byteOffset - wav.byteOffset;
+	const trimmed = Buffer.concat([wav.subarray(0, start), wav.subarray(start + bytes)]);
+	trimmed.writeUInt32LE(pcm.length - bytes, start - 4);
+	trimmed.writeUInt32LE(trimmed.length - 8, 4);
+	writeFileSync(wavPath, trimmed);
 }
 
 export function wavBase64(wavPath: string): string {

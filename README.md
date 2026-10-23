@@ -52,32 +52,27 @@ pi install "$PWD"
 ## 3. 配置：只需 API Key
 
 从 [MiMo 控制台](https://platform.xiaomimimo.com) 获取普通 API Key（不支持 Token Plan），
-创建或编辑 `~/.pi/mimo-voice-zh.json`（沿用旧文件名以兼容已有配置）。**只需填写 `apiKey`，无需复制完整配置：**
+**最简单的设置方式：复制 [Example 配置](examples/mimo-voice-input.example.json) 到 `~/.pi/mimo-voice-zh.json`，填入自己的 `apiKey` 即可。**已有配置的用户按需合并，不要直接覆盖。
 
-```json
-{
-  "apiKey": "YOUR_MIMO_API_KEY"
-}
-```
+示例使用 `F8` 录音，并开启 `mimo-v2.6-flash` 口语整理；其余选项自动使用默认值。
 
 运行 `chmod 600 ~/.pi/mimo-voice-zh.json` 保护凭据，然后在 Pi 中执行 `/reload`，按 `F8` 即可开始语音输入。
 不要将真实配置提交到 Git。
 
-以下设置均为可选，不配置也可正常使用：
+口语整理会增加一次 MiMo 文本请求，失败或超时保留原文；不需要时将 `textCleanupEnabled` 改为 `false`。
 
-- `sttShortcut`：录音快捷键，默认 `f8`。
-- `textCleanupEnabled`：启用口语整理，默认关闭；设为 `true` 后增加一次 MiMo 文本请求，失败或超时保留原文。
-- 其他选项使用默认值，完整配置见 [配置示例](examples/mimo-voice-input.example.json)。
+**需要进一步定制快捷键、录音设备、VAD 或模型参数？请看 [配置说明](docs/configuration.md)。**普通使用无需调整高级选项。
 
 ## 4. 使用
 
-- **`F8` 或 `/voice`**：开始录音，再次操作则停止并识别。等待“可以说话了”提示后再说话；部分键盘需按 `Fn+F8`。
+- **`F8` 或 `/voice`**：开始录音，再次操作则停止并识别。等待状态栏显示“● 录音”后再说话；部分键盘需按 `Fn+F8`。
 - **`/voice-test`**：本地录音自检，再次运行停止并回听，最多录制 10 秒；回放中再次运行可停止回放。
 - **`/voice-status`**：查看设备、录音检测和口语整理状态。
 - **`/voice-raw`**：恢复最近一次整理前的原文；草稿已修改或发送时不覆盖，退出或重载后不可恢复。
 - **`/reload`**：重新加载代码和配置。
 
+进度只显示在状态栏，录音时显示时长和停止快捷键，不再重复弹出正常进度或转写预览。
 识别结果追加到编辑器，保留已有草稿，**不会自动发送**。启用口语整理后允许改写，发送前请人工复核。
-录音发送给 MiMo；启用整理时还会发送转写文本。自检完全本地，不调用 API。
+录音发送给 MiMo；启用整理时还会向 MiMo 文本模型发送转写文本。自检完全本地，不调用 API。
 
 更多说明：[录音与排查](docs/audio.md) · [口语整理](docs/text-cleanup.md) · [开发与发布](docs/development.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)

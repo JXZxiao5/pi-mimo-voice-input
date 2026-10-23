@@ -52,31 +52,26 @@ Do not load both the local and npm versions at the same time. Before switching, 
 ## 3. Configuration: just an API key
 
 Get a regular API key from the [MiMo console](https://platform.xiaomimimo.com) (Token Plan keys are not supported).
-Create or edit `~/.pi/mimo-voice-zh.json` (the original filename is retained for compatibility). **Only `apiKey` is required—there is no need to copy the full configuration:**
+**The easiest setup: copy the [example configuration](examples/mimo-voice-input.example.json) to `~/.pi/mimo-voice-zh.json` and fill in your `apiKey`.** If you already have a configuration, merge the settings you need rather than overwriting it.
 
-```json
-{
-  "apiKey": "YOUR_MIMO_API_KEY"
-}
-```
+The example uses `F8` for recording and enables transcript cleanup with `mimo-v2.6-flash`. All other options use their defaults.
 
 Protect your credentials with `chmod 600 ~/.pi/mimo-voice-zh.json`, then run `/reload` in Pi. Press `F8` to start using voice input.
 Never commit your actual configuration to Git.
 
-The following settings are optional; the defaults work without adding them:
+Cleanup adds one MiMo text-model request; failures or timeouts keep the original transcript. Set `textCleanupEnabled` to `false` if you do not need it.
 
-- `sttShortcut`: the recording shortcut; defaults to `f8`.
-- `textCleanupEnabled`: optional transcript cleanup, disabled by default. Setting it to `true` adds one MiMo text-model request; failures or timeouts keep the original transcript.
-- Other settings use their defaults. See the [configuration example](examples/mimo-voice-input.example.json) for all options.
+**For deeper customization of shortcuts, recording devices, VAD, or model settings, see the [configuration reference (Chinese)](docs/configuration.md).** Advanced options do not need changing for normal use.
 
 ## 4. Usage
 
-- **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for the “可以说话了” (“You can speak now”) notification before speaking. Some keyboards require `Fn+F8`.
+- **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for “● 录音” (“Recording”) in the status bar before speaking. Some keyboards require `Fn+F8`.
 - **`/voice-test`**: run a local microphone check. Run it again to stop recording and play it back; recording is limited to 10 seconds. Run it during playback to stop playback.
 - **`/voice-status`**: show the input device, recording diagnostics, and transcript cleanup status.
 - **`/voice-raw`**: restore the original transcript from the latest cleanup. It will not overwrite a draft that has been edited or sent; the original is forgotten on exit or reload.
 - **`/reload`**: reload the extension and its configuration.
 
+Progress appears only in the status bar, with elapsed recording time and the stop shortcut. Normal progress and transcript previews no longer generate duplicate notifications.
 Transcribed text is appended to the editor, preserving your existing draft, and is **never sent automatically**. Optional cleanup may rephrase your words; always review the result before sending.
 Recordings are sent to MiMo. When cleanup is enabled, the transcript is also sent to a MiMo text model. Microphone checks run entirely locally without API calls.
 

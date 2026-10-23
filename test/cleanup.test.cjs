@@ -46,6 +46,23 @@ test('MiMo cleanup requests naturally rewritten full text, disables thinking, an
   assert.equal(fetch.mock.callCount(), 1);
 });
 
+test('DeepSeek uses isolated bearer authentication, non-thinking mode and cache usage', async t => {
+  t.mock.method(global, 'fetch', async (url, opts) => {
+    assert.equal(url, 'https://api.deepseek.com/chat/completions');
+    assert.equal(opts.headers.Authorization, 'Bearer deepseek-test');
+    assert.equal(opts.headers['api-key'], undefined);
+    const body = JSON.parse(opts.body);
+    assert.equal(body.model, 'deepseek-flash');
+    assert.deepEqual(body.thinking, { type: 'disabled' });
+    assert.equal(body.max_tokens, 1024);
+    assert.equal(body.max_completion_tokens, undefined);
+    return reply('检查日志。', { usage: { prompt_tokens: 100, completion_tokens: 10, prompt_cache_hit_tokens: 80 } });
+  });
+  const result = await cleanup.cleanupTranscriptWithMetrics('嗯，检查日志。', 'deepseek-test', { ...settings, cleanupModel: 'deepseek-flash' });
+  assert.equal(result.text, '检查日志。');
+  assert.equal(result.usage.cachedTokens, 80);
+});
+
 test('full-text output budget scales with input length and stays bounded, with configurable model', async t => {
   for (const [length, expectedBudget] of [[6, 1024], [1500, 3000], [2200, 4400], [16000, 16384]]) {
     const raw = '字'.repeat(length);

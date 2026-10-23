@@ -18,8 +18,8 @@ test('published tarball contains only release files and its stable entry loads w
   const expected = [
     'index.ts', 'package.json', 'README.md', 'README.en.md', 'CHANGELOG.md', 'LICENSE',
     'examples/mimo-voice-input.example.json',
-    'docs/audio.md', 'docs/text-cleanup.md', 'docs/development.md',
-    'src/extension.ts', 'src/audio.ts', 'src/diagnostics.ts', 'src/vad.ts',
+    'docs/audio.md', 'docs/text-cleanup.md', 'docs/development.md', 'docs/configuration.md',
+    'src/extension.ts', 'src/status.ts', 'src/audio.ts', 'src/diagnostics.ts', 'src/vad.ts',
     'src/webrtc.ts', 'src/mimo.ts', 'src/cleanup.ts', 'src/cleanup-prompt.ts',
   ].sort();
   assert.deepEqual(packed.files.map(file => file.path).sort(), expected);
