@@ -29,16 +29,13 @@ test('idle, startup, recording and processing keep the same width and shortcut c
     assert.equal(expectedWidth, shortcut === 'f8' ? 11 : 21);
     assert.equal(app.text, `○ 语音 · ${shortcut === 'f8' ? 'F8' : shortcut}`);
     app.bar.update(app.ctx, { kind: 'starting', shortcut });
-    let previousPosition = 6;
-    for (let i = 0; i < 20; i++) {
-      const position = app.text.indexOf('○');
-      assert.ok(position >= 0 && position <= previousPosition, 'dot only travels right to left');
-      previousPosition = position;
-      t.mock.timers.tick(50);
-    }
-    assert.ok(app.text.indexOf('○') > 0, 'elapsed time alone never signals readiness');
+    assert.match(app.text, /^────── · /);
+    assert.ok(app.statuses.at(-1).includes('\x1b[37m──────\x1b[39m'));
+    const startingWrites = app.statuses.length;
+    t.mock.timers.tick(1000);
+    assert.equal(app.statuses.length, startingWrites, 'startup line is static');
     app.bar.update(app.ctx, { kind: 'starting', progress: 1, shortcut });
-    assert.equal(app.text.indexOf('○'), 0, 'last animation frame lands on recording dot');
+    assert.match(app.text, /^────── · /, 'progress alone does not change the startup line');
     assert.equal(app.text.includes('●'), false);
     app.bar.update(app.ctx, { kind: 'recording', startedAt: Date.now(), test: false, shortcut });
     assert.equal(app.text.indexOf('●'), 0);
@@ -53,7 +50,6 @@ test('idle, startup, recording and processing keep the same width and shortcut c
       assert.equal(width(rendered), expectedWidth, 'footer must not collapse padding');
     }
   }
-  assert.ok(app.colors.some(c => c.color === 'accent' && c.text === '○'));
   assert.ok(app.colors.some(c => c.color === 'error' && c.text === '●'));
   assert.ok(!app.colors.some(c => c.color === 'error' && c.text === '○'));
 });
@@ -72,23 +68,22 @@ test('self-test startup, recording and playback share a stable layout', t => {
   }
 });
 
-test('delayed devices never reach the left endpoint and repeated progress does not restart animation', t => {
+test('delayed devices keep the white line until recording is ready', t => {
   const app = setup(t);
   app.bar.update(app.ctx, { kind: 'starting' });
   t.mock.timers.tick(500);
-  const position = app.text.indexOf('○');
+  const startingText = app.text;
   app.bar.update(app.ctx, { kind: 'starting', progress: 0.1 });
-  assert.equal(app.text.indexOf('○'), position);
+  assert.equal(app.text, startingText);
   t.mock.timers.tick(5000);
-  assert.ok(app.text.indexOf('○') > 0);
-  assert.match(app.text, /^ +○ +· F8$/);
+  assert.equal(app.text, '────── · F8');
   assert.ok(!app.colors.some(c => c.color === 'error'), 'warmup never uses the recording color');
   app.bar.stop();
   const count = app.statuses.length;
   t.mock.timers.tick(5000);
   assert.equal(app.statuses.length, count);
   app.bar.update(app.ctx, { kind: 'starting' });
-  assert.equal(app.text.indexOf('○'), 5, 'fresh session resets the animation');
+  assert.equal(app.text, '────── · F8', 'fresh session starts with the same line');
 });
 
 test('idle writes are deduplicated, theme changes repaint and disabled width is stable', t => {

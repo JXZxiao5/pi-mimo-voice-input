@@ -7,8 +7,10 @@ const { createJiti } = require('jiti');
 const { wav, executable, waitFor } = require('./support/helpers.cjs');
 
 async function setup(t, recorderFails = false, sample = wav(), config = {}, vadOptions = {}, recorderOptions = {}) {
-  // Fake recorder includes the same 1000ms startup segment as a real stream.
-  sample = Buffer.concat([sample.subarray(0, 44), Buffer.alloc(32000), sample.subarray(44)]);
+  // Fake recorder includes the configured startup segment.
+  const warmupMs = Number.isInteger(config.recordingWarmupMs) && config.recordingWarmupMs >= 0
+    && config.recordingWarmupMs <= 3000 ? config.recordingWarmupMs : 1000;
+  sample = Buffer.concat([sample.subarray(0, 44), Buffer.alloc(warmupMs * 32), sample.subarray(44)]);
   sample.writeUInt32LE(sample.length - 8, 4);
   sample.writeUInt32LE(sample.length - 44, 40);
   const home = fs.mkdtempSync(join(tmpdir(), 'mimo-extension-test-'));
@@ -23,7 +25,7 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
   fs.writeFileSync(join(home, 'vad-options.json'), JSON.stringify(vadOptions));
   fs.writeFileSync(join(home, 'recorder-options.json'), JSON.stringify(recorderOptions));
   fs.writeFileSync(join(home, '.pi/mimo-voice-zh.json'), JSON.stringify({
-    apiKey: 'fake-api-key', sttEnabled: true, ...config,
+    apiKey: 'fake-api-key', sttEnabled: true, recordingMode: 'legacy', ...config,
   }));
   const originalPath = process.env.PATH;
   const originalHome = process.env.HOME;
@@ -72,6 +74,7 @@ async function setup(t, recorderFails = false, sample = wav(), config = {}, vadO
       theme: { fg: (_color, text) => text },
       notify: (text, level) => notices.push({ text, level }),
       setStatus: (_key, value) => {
+        if (_key === 'mimo-capture') return;
         // Match visible text while retaining all layout spaces for lifecycle assertions.
         value = require('node:util').stripVTControlCharacters(value).replace(/\u00a0/g, ' ');
         status = value; statuses.push(value);
@@ -116,6 +119,7 @@ test('new user configuration and diagnostics only expose MiMo', async t => {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   assert.equal(config.cleanupModel, 'mimo-v2.6-flash');
   assert.equal(Object.hasOwn(config, 'deepseekApiKey'), false);
+  assert.equal(Object.hasOwn(config, 'recordingWarmupMs'), false);
   await app.calls.get('voice-status')();
   assert.ok(!/deepseek/i.test(app.notices.at(-1).text));
 });
@@ -211,17 +215,17 @@ test('voice, F8, and self-test show startup until actual audio arrives and rejec
       const app = await setup(t, false, wav(), {}, {}, { manualAudio: true });
       const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('startup must not upload'); });
       const pending = app.calls.get(command)();
-      assert.match(app.status, /^ +○ +· /);
+      assert.match(app.status, /^────── · /);
       const path = await app.ready();
       assert.equal(fs.statSync(path).size, 44, 'recorder has only written an unfinished WAV header');
       assert.ok(!app.statuses.some(s => s.startsWith('●')));
       assert.deepEqual(app.notices, []);
       await app.calls.get(command)();
-      assert.match(app.status, /^ +○ +· /);
+      assert.match(app.status, /^────── · /);
       assert.deepEqual(app.notices, [], 'duplicate starts do not repeat progress as notifications');
       fs.appendFileSync(path, Buffer.alloc(31998)); // 999.9375ms is not ready.
       await new Promise(resolve => setTimeout(resolve, 80));
-      assert.match(app.status, /^ +○ +· /);
+      assert.match(app.status, /^────── · /);
       fs.appendFileSync(path, Buffer.alloc(2)); // Exactly 1000ms, even silence, is ready.
       await pending;
       assert.match(app.status, command === 'voice-test'
@@ -234,6 +238,43 @@ test('voice, F8, and self-test show startup until actual audio arrives and rejec
   }
 });
 
+test('custom warmup controls readiness and trims exactly the configured duration', async t => {
+  for (const recordingWarmupMs of [0, 200, 3000]) {
+    await t.test(`${recordingWarmupMs}ms`, async t => {
+      const app = await setup(t, false, wav(), { recordingWarmupMs, vadEnabled: false }, {}, { manualAudio: true });
+      const fetch = t.mock.method(global, 'fetch', async (_url, opts) => {
+        const audio = JSON.parse(opts.body).messages[0].content[0].input_audio.data;
+        assert.equal(audio, `data:audio/wav;base64,${wav().toString('base64')}`);
+        return Response.json({ choices: [{ message: { content: '测试' } }] });
+      });
+      const pending = app.calls.get('voice')();
+      const path = await app.ready();
+      const bytes = Math.max(2, recordingWarmupMs * 32);
+      fs.appendFileSync(path, Buffer.alloc(bytes - 2));
+      await new Promise(resolve => setTimeout(resolve, 80));
+      assert.ok(!app.statuses.some(s => s.startsWith('●')));
+      fs.appendFileSync(path, Buffer.alloc(2));
+      await pending;
+      assert.match(app.status, /^●/);
+      await app.calls.get('voice')();
+      assert.equal(fetch.mock.callCount(), 1);
+    });
+  }
+});
+
+test('invalid warmup is rejected before starting capture for voice and self-test', async t => {
+  for (const recordingWarmupMs of [-1, 3001, 1.5, '200', null]) {
+    await t.test(JSON.stringify(recordingWarmupMs), async t => {
+      const app = await setup(t, false, wav(), { recordingWarmupMs });
+      for (const command of ['voice', 'voice-test']) {
+        await app.calls.get(command)();
+        assert.match(app.notices.at(-1).text, /recordingWarmupMs/);
+        assert.equal(fs.existsSync(join(app.home, 'recorder-pid')), false);
+      }
+    });
+  }
+});
+
 test('startup timeout stops the recorder, unloads WebRTC, deletes audio, and allows retry', async t => {
   const app = await setup(t, false, wav(), { recordingProcessing: 'webrtc' }, {}, { manualAudio: true });
   const calls = installWebrtcPulse(app);
@@ -241,7 +282,7 @@ test('startup timeout stops the recorder, unloads WebRTC, deletes audio, and all
   const pending = app.calls.get('voice-test')();
   const path = await app.ready();
   const pid = Number(fs.readFileSync(join(app.home, 'recorder-pid'), 'utf8'));
-  assert.match(app.status, /^ +○ +· /);
+  assert.match(app.status, /^────── · /);
   await pending;
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   assert.equal(fs.existsSync(path), false);
@@ -326,7 +367,7 @@ test('custom shortcuts override F8 without rewriting existing preferences', asyn
       const app = await setup(t, false, wav(), { sttShortcut });
       const configPath = join(app.home, '.pi/mimo-voice-zh.json');
       const before = fs.readFileSync(configPath, 'utf8');
-      assert.deepEqual([...app.calls.keys()].sort(), [sttShortcut, 'voice', 'voice-raw', 'voice-status', 'voice-test']);
+      assert.deepEqual([...app.calls.keys()].sort(), [sttShortcut, 'voice', 'voice-daemon', 'voice-raw', 'voice-status', 'voice-test']);
       await app.calls.get(sttShortcut)();
       const path = await app.ready();
       assert.equal(app.status, `● 0:00 · ${sttShortcut.replace(/f\d+/g, key => key.toUpperCase())}`);
@@ -388,7 +429,7 @@ test('shutdown aborts in-flight ASR without stale notifications or editor writes
 test('extension only registers speech-input commands and diagnostics never expose key', async t => {
   const app = await setup(t);
   const fetch = t.mock.method(global, 'fetch', async () => { throw new Error('diagnostics must not call API'); });
-  assert.deepEqual([...app.calls.keys()].sort(), ['f8', 'voice', 'voice-raw', 'voice-status', 'voice-test']);
+  assert.deepEqual([...app.calls.keys()].sort(), ['f8', 'voice', 'voice-daemon', 'voice-raw', 'voice-status', 'voice-test']);
   assert.deepEqual([...app.events.keys()].sort(), ['session_shutdown', 'session_start']);
   await app.calls.get('voice-status')();
   const notice = app.notices.at(-1).text;
@@ -486,7 +527,7 @@ test('shutdown cleans up an active WebRTC module and a late module initializatio
     const calls = installWebrtcPulse(app, 250);
     const pending = app.calls.get('voice-test')();
     await waitFor(() => calls().some(x => x[0] === 'load-module'));
-    assert.match(app.status, /^ +○ +· /);
+    assert.match(app.status, /^────── · /);
     assert.ok(!app.notices.some(n => n.text.includes('可以说话了')));
     const notices = app.notices.length;
     const statuses = app.statuses.length;

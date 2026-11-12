@@ -25,7 +25,6 @@ export class VoiceStatusBar {
 	private lastText?: string;
 	private kind?: VoiceStatus["kind"];
 	private frame = 0;
-	private startupAt = 0;
 	private shortcut = "F8";
 	private test = false;
 
@@ -34,7 +33,6 @@ export class VoiceStatusBar {
 		if (!ctx.hasUI) return;
 		if (state.kind !== this.kind) {
 			this.frame = 0;
-			if (state.kind === "starting") this.startupAt = Date.now();
 		}
 		this.kind = state.kind;
 		if (state.kind === "idle" || state.kind === "recording" || state.kind === "starting") {
@@ -53,17 +51,10 @@ export class VoiceStatusBar {
 				case "idle":
 					text = hint(`${state.enabled ? "○ 语音" : "○ 关闭"} · ${shortcut}`);
 					break;
-				case "starting": {
-					// 展示可预估推进，但永远留最后一格，只有真实就绪才允许圆点落位。
-					// 从按键时刻计时，避免录音后端成块写入 WAV 时动画长时间静止。
-					const elapsed = Math.max(0, Date.now() - this.startupAt);
-					const progress = state.progress === 1 ? 1 : Math.min(0.9, elapsed / 1000);
-					const position = Math.ceil((lane - 1) * (1 - progress));
-					// 预热始终用强调色空心圆；只有进入录音状态才显示红色实心圆和计时。
-					const dot = theme.fg("accent", "○");
-					text = " ".repeat(position) + dot + " ".repeat(lane - position - 1) + suffix;
+				case "starting":
+					// 标准 ANSI 白色横线；只有真实就绪才切换为红点和计时。
+					text = `\x1b[37m${"─".repeat(lane)}\x1b[39m` + suffix;
 					break;
-				}
 				case "recording":
 					text = `${theme.fg("error", "●")} ${elapsedTime(state.startedAt)}` + suffix;
 					break;
@@ -85,8 +76,8 @@ export class VoiceStatusBar {
 				this.lastText = text;
 			}
 			if (ctx.mode === "tui") {
-				this.timer = setTimeout(refresh, state.kind === "starting" ? 50
-					: state.kind === "recognizing" || state.kind === "cleaning" ? 120 : 1000);
+				this.timer = setTimeout(refresh,
+					state.kind === "recognizing" || state.kind === "cleaning" ? 120 : 1000);
 				this.timer.unref();
 			}
 		};

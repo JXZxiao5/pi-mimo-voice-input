@@ -17,6 +17,7 @@ import { prepareWebrtcInput, type ProcessedInput } from "./webrtc.ts";
 import { prepareSpeech, speechSummary, validateVadThreshold } from "./vad.ts";
 import { cleanupTranscript, DEFAULT_CLEANUP_SETTINGS, type CleanupSettings } from "./cleanup.ts";
 import { VoiceStatusBar } from "./status.ts";
+import { CaptureClient, captureTime, controlDaemon } from "./daemon.ts";
 
 interface VoiceSettings extends CleanupSettings {
 	sttEnabled: boolean;
@@ -24,8 +25,11 @@ interface VoiceSettings extends CleanupSettings {
 	// 私用兼容字段，不写入默认配置或公开示例。
 	deepseekApiKey?: string;
 	sttShortcut: string;
+	recordingMode: "daemon" | "legacy";
 	recordingBackend: RecordingBackend;
 	recordingDevice: string;
+	// 高级可选项；省略时使用默认预热，不写入生成的配置。
+	recordingWarmupMs?: number;
 	recordingProcessing: "none" | "webrtc";
 	vadEnabled: boolean;
 	vadThreshold: number;
@@ -38,6 +42,7 @@ const TMP_PREFIX = "pi-mimo-voice-input-";
 const DEFAULT_SETTINGS: VoiceSettings = {
 	...DEFAULT_CLEANUP_SETTINGS, textCleanupEnabled: false,
 	apiKey: "", sttEnabled: true, sttShortcut: "f8",
+	recordingMode: process.platform === "linux" ? "daemon" : "legacy",
 	recordingBackend: "auto", recordingDevice: "", recordingProcessing: "none",
 	vadEnabled: true, vadThreshold: 0.5,
 };
@@ -78,7 +83,9 @@ function cleanupOldTmpDirs(): void {
 }
 
 interface Recording {
-	process: AudioProcess;
+	warmupMs: number;
+	process?: AudioProcess;
+	daemon?: CaptureClient;
 	path: string;
 	ready: boolean;
 	startedAt: number;
@@ -108,6 +115,50 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 	let fileId = 0;
 	const processedInputs = new Set<ProcessedInput>();
 	const statusBar = new VoiceStatusBar();
+	let capture: CaptureClient | undefined;
+	let captureTimer: ReturnType<typeof setTimeout> | undefined;
+	let captureGeneration = 0;
+
+	function watchCapture(ctx: ExtensionContext, launch: boolean): void {
+		const generation = ++captureGeneration;
+		clearTimeout(captureTimer);
+		const poll = async () => {
+			try {
+				if (!capture) {
+					const client = await CaptureClient.open(settings, launch);
+					if (!active || generation !== captureGeneration) { client.close(); return; }
+					capture = client;
+				}
+				launch = false;
+				const observedRecording = recording;
+				const state = await capture.status();
+				if (!active || generation !== captureGeneration) return;
+				ctx.ui.setStatus("mimo-capture", state.ready ? undefined : `麦克风未就绪：${state.error || "等待音频"}`);
+				if (recording?.daemon && recording === observedRecording && !recording.stopping && (!state.ready || !state.owned)) {
+					clearTimeout(recording.timer);
+					removeFile(recording.path);
+					recording = null;
+					await capture.cancel();
+					ctx.ui.notify("麦克风中断，当前录音已取消，未上传", "warning");
+					updateStatus(ctx);
+				}
+			} catch (error) {
+				if (!active || generation !== captureGeneration) return;
+				launch = false;
+				capture?.close();
+				capture = undefined;
+				if (recording?.daemon && !recording.stopping) {
+					clearTimeout(recording.timer);
+					recording = null;
+					ctx.ui.notify("语音后台断开，当前录音已取消，未上传", "warning");
+					updateStatus(ctx);
+				}
+				ctx.ui.setStatus("mimo-capture", `麦克风未就绪：${errorMessage(error, settings.apiKey)}`);
+			}
+			if (active && generation === captureGeneration) captureTimer = setTimeout(poll, 1000);
+		};
+		void poll();
+	}
 
 	async function releaseInput(input?: ProcessedInput, ctx?: ExtensionContext): Promise<void> {
 		if (!input) return;
@@ -168,6 +219,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 	}
 
 	async function sttHandler(ctx: ExtensionContext, test = false): Promise<void> {
+		const pressedAt = captureTime();
 		if (!ctx.hasUI || !active) return;
 		if (test && currentPlayer) {
 			stopReplay();
@@ -200,15 +252,19 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			recognizing = true;
 			updateStatus(ctx);
 			try {
-				await stopAudioProcess(current.process);
+				if (current.daemon) {
+					const wav = await current.daemon.stop(pressedAt);
+					if (!active || session !== sessionGen) return;
+					writeFileSync(current.path, wav, { mode: 0o600 });
+				} else await stopAudioProcess(current.process!);
 				await releaseInput(current.input, ctx);
 				if (!active || session !== sessionGen) return;
 				recording = null;
-				trimRecordingWarmup(current.path);
+				if (!current.daemon) trimRecordingWarmup(current.path, current.warmupMs);
 				const quality = inspectWav(current.path);
 				summary = qualitySummary(quality);
 				const issues = audioIssues(quality);
-				lastDiagnostic = [summary, `录音处理: ${current.input ? "WebRTC 降噪 / 高通 / 数字增益" : "原始录音"}`,
+				lastDiagnostic = [summary, `录音处理: ${current.input || (current.daemon && settings.recordingProcessing === "webrtc") ? "WebRTC 降噪 / 高通 / 数字增益" : "原始录音"}`,
 					...issues.map((issue) => issue.message)].join("\n");
 				if (test) {
 					ctx.ui.notify(lastDiagnostic, issues.length ? "warning" : "info");
@@ -275,6 +331,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 					ctx.ui.notify(`${test ? "麦克风自检" : "语音识别"}失败: ${errorMessage(error, settings.apiKey)}${summary ? `\n${summary}` : ""}`, "error");
 				}
 			} finally {
+				await current.daemon?.cancel().catch(() => {});
 				await releaseInput(current.input, ctx);
 				removeFile(current.path);
 				if (speechPath) removeFile(speechPath);
@@ -290,6 +347,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		let path: string | undefined;
 		let input: ProcessedInput | undefined;
 		let pendingRecording: Recording | undefined;
+		let daemonStarted: CaptureClient | undefined;
 		let ready = false;
 		const session = sessionGen;
 		const signal = requests.signal;
@@ -298,6 +356,37 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		warmupProgress = undefined;
 		updateStatus(ctx);
 		try {
+			const warmupMs = settings.recordingWarmupMs === undefined ? RECORDING_WARMUP_MS : settings.recordingWarmupMs;
+			if (!Number.isInteger(warmupMs) || warmupMs < 0 || warmupMs > 3000) {
+				throw new Error("recordingWarmupMs 必须是 0–3000 的整数（毫秒）");
+			}
+			if (!["daemon", "legacy"].includes(settings.recordingMode)) throw new Error("recordingMode 只支持 daemon / legacy");
+			if (settings.recordingMode === "daemon") {
+				if (!test && typeof settings.textCleanupEnabled !== "boolean") throw new Error("textCleanupEnabled 必须是 true 或 false");
+				if (!test && typeof settings.vadEnabled !== "boolean") throw new Error("vadEnabled 必须是 true 或 false");
+				if (!test && settings.vadEnabled) validateVadThreshold(settings.vadThreshold);
+				const client = capture;
+				if (!client) throw new Error("麦克风后台未就绪，请查看 /voice-daemon status");
+				stopReplay();
+				await client.start(pressedAt);
+				daemonStarted = client;
+				if (!active || session !== sessionGen || capture !== client) { await client.cancel().catch(() => {}); return; }
+				path = audioPath("stt");
+				const current: Recording = {
+					daemon: client, path, warmupMs: 0, ready: true, startedAt: Date.now(), stopping: false, test,
+				};
+				recording = current;
+				pendingRecording = current;
+				ready = true;
+				starting = false;
+				current.timer = setTimeout(() => {
+					if (recording !== current || current.stopping) return;
+					ctx.ui.notify(test ? "10 秒自检结束，自动停止" : "已达到 3 分钟录音上限，自动停止并识别", "warning");
+					void sttHandler(ctx, test);
+				}, Math.max(0, (test ? 10_000 : MAX_RECORDING_MS) - (captureTime() - pressedAt) * 1000));
+				updateStatus(ctx);
+				return;
+			}
 			const backend = recordingCommand("", settings.recordingBackend, settings.recordingDevice);
 			if (!test) {
 				if (typeof settings.textCleanupEnabled !== "boolean") throw new Error("textCleanupEnabled 必须是 true 或 false");
@@ -325,11 +414,11 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			path = audioPath("stt");
 			const command = recordingCommand(path, settings.recordingBackend, input?.source || settings.recordingDevice);
 			const current: Recording = {
-				process: startAudioProcess(command), path, ready: false, startedAt: 0, stopping: false, test, input,
+				process: startAudioProcess(command), path, ready: false, startedAt: 0, stopping: false, test, input, warmupMs,
 			};
 			pendingRecording = current;
 			recording = current;
-			void current.process.closed.then(async (result) => {
+			void current.process!.closed.then(async (result) => {
 				// 启动中的退出交给就绪等待处理，避免重复报错或提前显示红灯。
 				if (!current.ready || recording !== current || current.stopping) return;
 				clearTimeout(current.timer);
@@ -343,7 +432,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 					settings.apiKey,
 				)}`, "error");
 			});
-			await waitForRecordingReady(current.process, path, signal, undefined, RECORDING_WARMUP_MS, (progress) => {
+			await waitForRecordingReady(current.process!, path, signal, undefined, current.warmupMs, (progress) => {
 				if (!active || session !== sessionGen || recording !== current || warmupProgress === progress) return;
 				warmupProgress = progress;
 				updateStatus(ctx);
@@ -366,9 +455,11 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			}
 		} finally {
 			if (!ready) {
+				await daemonStarted?.cancel().catch(() => {});
 				if (pendingRecording) {
 					pendingRecording.stopping = true;
-					await stopAudioProcess(pendingRecording.process).catch(() => {});
+					if (pendingRecording.process) await stopAudioProcess(pendingRecording.process).catch(() => {});
+					await pendingRecording.daemon?.cancel().catch(() => {});
 					if (recording === pendingRecording) recording = null;
 				}
 				await releaseInput(input);
@@ -383,6 +474,10 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 
 	async function cleanupSession(): Promise<void> {
 		active = false;
+		captureGeneration++;
+		clearTimeout(captureTimer);
+		capture?.close();
+		capture = undefined;
 		statusBar.stop();
 		sessionGen++;
 		requests.abort();
@@ -401,7 +496,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		}
 		await Promise.all([
 			pendingCleanup?.catch(() => {}),
-			current ? stopAudioProcess(current.process).catch(() => {}) : undefined,
+			current?.process ? stopAudioProcess(current.process).catch(() => {}) : undefined,
 			player ? stopAudioProcess(player, "SIGTERM").catch(() => {}) : undefined,
 		]);
 		await Promise.all([...processedInputs].map((input) => releaseInput(input)));
@@ -423,6 +518,36 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			}
 		}
 		updateStatus(ctx);
+		ctx.ui.setStatus("mimo-capture", undefined);
+		if (settings.recordingMode === "daemon" && ctx.hasUI) watchCapture(ctx, true);
+	});
+
+	pi.registerCommand("voice-daemon", {
+		description: "共享麦克风后台：status / stop / restart（重启应用当前磁盘配置）",
+		handler: async (args, ctx) => {
+			const action = args.trim() || "status";
+			try {
+				if (action === "status") {
+					const client = await CaptureClient.open(settings, false);
+					try {
+						const state = await client.status();
+						ctx.ui.notify(`后台：${state.ready ? "就绪" : state.error || "等待音频"}；${state.busy ? "录音中" : "空闲"}`, "info");
+					} finally { client.close(); }
+					return;
+				}
+				if (action !== "stop" && action !== "restart") throw new Error("用法：/voice-daemon status|stop|restart");
+				captureGeneration++;
+				clearTimeout(captureTimer);
+				capture?.close();
+				capture = undefined;
+				if (recording?.daemon) { clearTimeout(recording.timer); recording = null; updateStatus(ctx); }
+				if (action === "restart") settings = loadSettings();
+				await controlDaemon(action, settings);
+				ctx.ui.setStatus("mimo-capture", action === "stop" ? "麦克风后台已停止" : "麦克风预热中");
+				if (action === "restart") watchCapture(ctx, false);
+				ctx.ui.notify(action === "stop" ? "共享录音后台已停止（影响所有会话）" : "共享录音后台已重启，正在预热", "info");
+			} catch (error) { ctx.ui.notify(errorMessage(error, settings.apiKey), "error"); }
+		},
 	});
 
 	pi.registerShortcut(settings.sttShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
@@ -470,7 +595,7 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 			}
 			ctx.ui.notify([
 				`平台: ${process.platform}；API Key: ${settings.apiKey ? "已配置" : "未配置"}`,
-				`录音: ${backend}；处理: ${settings.recordingProcessing === "webrtc" ? "WebRTC（不改默认设备/硬件增益）" : "原始录音"}`,
+				`录音: ${settings.recordingMode === "daemon" ? "共享后台（/voice-daemon status）" : backend}；处理: ${settings.recordingProcessing === "webrtc" ? "WebRTC（不改默认设备/硬件增益）" : "原始录音"}`,
 				`输入设备: ${inputDescription}`,
 				`VAD: ${settings.vadEnabled ? `Silero v5 本地检测（阈值 ${settings.vadThreshold}）` : "已关闭"}；自检保留原始录音`,
 				`口语清洗: ${settings.textCleanupEnabled ? `${settings.cleanupModel.startsWith("deepseek-") ? "DeepSeek" : "MiMo"} API / ${settings.cleanupModel}；思考已关闭；超时 ${settings.cleanupTimeoutMs / 1000} 秒；自然整理，允许改写，请复核` : "已关闭"}`,
@@ -481,5 +606,8 @@ export default function mimoVoiceInput(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_shutdown", cleanupSession);
+	pi.on("session_shutdown", async (_event, ctx) => {
+		await cleanupSession();
+		ctx.ui.setStatus("mimo-capture", undefined);
+	});
 }

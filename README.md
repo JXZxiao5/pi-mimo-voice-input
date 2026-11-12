@@ -27,7 +27,7 @@
 
 ```bash
 # Ubuntu / Debian
-sudo apt install pulseaudio-utils alsa-utils
+sudo apt install python3 libpulse0 pulseaudio-utils alsa-utils
 # macOS
 brew install sox
 ```
@@ -65,9 +65,15 @@ pi install "$PWD"
 
 ## 4. 使用
 
+Ubuntu/Linux 默认使用共享常驻麦克风：首次 Pi 启动时预热一次，多会话共用一份后台。
+之后 F8 标记录音边界，不再每句话等待预热。空闲音频仅保留短时内存缓冲，不落盘或上传。
+关闭所有 Pi 后仍采集，直到停止后台、注销或关机；不设置登录自启。
+仅 F8 圈定的音频参与识别。详见 [录音说明](docs/audio.md)；可配置 `recordingMode: "legacy"` 手动使用旧模式。
+
 - **`F8` 或 `/voice`**：开始录音，再次操作则停止并识别。等待状态栏出现录音计时（如“● 0:00 · F8”）后再说话；部分键盘需按 `Fn+F8`。
 - **`/voice-test`**：本地录音自检，再次运行停止并回听，最多录制 10 秒；回放中再次运行可停止回放。
 - **`/voice-status`**：查看设备、录音检测和口语整理状态。
+- **`/voice-daemon status|stop|restart`**：查看、停止或重启共享后台；后两项影响所有会话，重启应用新的麦克风配置。
 - **`/voice-raw`**：恢复最近一次整理前的原文；草稿已修改或发送时不覆盖，退出或重载后不可恢复。
 - **`/reload`**：重新加载代码和配置。
 

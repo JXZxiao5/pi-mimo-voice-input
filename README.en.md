@@ -27,7 +27,7 @@ Requires [Pi](https://github.com/earendil-works/pi) and Node.js ≥ 22.19. Insta
 
 ```bash
 # Ubuntu / Debian
-sudo apt install pulseaudio-utils alsa-utils
+sudo apt install python3 libpulse0 pulseaudio-utils alsa-utils
 # macOS
 brew install sox
 ```
@@ -64,6 +64,15 @@ Cleanup adds one MiMo text-model request; failures or timeouts keep the original
 **For deeper customization of shortcuts, recording devices, VAD, or model settings, see the [configuration reference (Chinese)](docs/configuration.md).** Advanced options do not need changing for normal use.
 
 ## 4. Usage
+
+Ubuntu/Linux defaults to a shared user-level systemd capture service. It warms up once,
+keeps the microphone open across Pi sessions, and retains only a short in-memory idle buffer.
+F8 marks the start/end boundaries; only that segment is passed to recognition. Closing Pi
+leaves capture running until stopped, desktop logout, or shutdown; no login autostart is installed.
+Use `/voice-daemon status|stop|restart` to manage it (stop/restart affect all sessions).
+Device/config changes require an explicit restart. Failures never silently fall back;
+set `recordingMode: "legacy"` and stop the daemon to use the previous per-recording mode.
+macOS keeps legacy mode by default.
 
 - **`F8` or `/voice`**: start recording; use it again to stop and transcribe. Wait for the recording timer (e.g. “● 0:00 · F8”) in the status bar before speaking. Some keyboards require `Fn+F8`.
 - **`/voice-test`**: run a local microphone check. Run it again to stop recording and play it back; recording is limited to 10 seconds. Run it during playback to stop playback.

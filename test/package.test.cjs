@@ -21,6 +21,7 @@ test('published tarball contains only release files and its stable entry loads w
     'docs/audio.md', 'docs/text-cleanup.md', 'docs/development.md', 'docs/configuration.md',
     'src/extension.ts', 'src/status.ts', 'src/audio.ts', 'src/diagnostics.ts', 'src/vad.ts',
     'src/webrtc.ts', 'src/mimo.ts', 'src/cleanup.ts', 'src/cleanup-prompt.ts',
+    'src/daemon.ts', 'src/voice-daemon.py',
   ].sort();
   assert.deepEqual(packed.files.map(file => file.path).sort(), expected);
   execFileSync('tar', ['-xzf', join(dir, packed.filename), '-C', dir]);
